@@ -1,6 +1,6 @@
 /// @file    m5lights_v1.ino
 /// @brief   FastLED demo reel adapted for M5StickC Plus 2
-/// @version 1.0.0
+/// @version 1.0.1
 /// @date    2024-10-24
 /// @author  John Cohn (adapted from Mark Kriegsman)
 /// @example m5lights_v1.ino
@@ -20,7 +20,7 @@
 FASTLED_USING_NAMESPACE
 
 // Version info
-#define VERSION "1.0.0"
+#define VERSION "1.0.1"
 #define BUILD_DATE "2025-10-24"
 
 // Animation speeds
