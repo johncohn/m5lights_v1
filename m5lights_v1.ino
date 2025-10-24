@@ -21,7 +21,7 @@ FASTLED_USING_NAMESPACE
 
 // Version info
 #define VERSION "1.0.0"
-#define BUILD_DATE "2024-10-24"
+#define BUILD_DATE "2025-10-24"
 
 // Animation speeds
 #define FORWARD 0
