@@ -1,11 +1,29 @@
 /// @file    m5lights_v1.ino
 /// @brief   FastLED demo reel adapted for M5StickC Plus 2
+/// @version 1.0.0
+/// @date    2024-10-24
+/// @author  John Cohn (adapted from Mark Kriegsman)
 /// @example m5lights_v1.ino
+///
+/// @changelog
+/// v1.0.0 (2024-10-24) - Initial release
+///   - Ported FastLED demo from ESP32-S3 to M5StickC Plus 2
+///   - Support for 250 WS2811/WS2812 LEDs on G32 pin
+///   - 6 animation patterns with auto-cycling and manual control
+///   - M5StickC Plus 2 display integration with pattern info
+///   - Button A for manual pattern switching
+///   - Auto-cycle every 5 seconds
 
 #include <M5StickCPlus2.h>
 #include <FastLED.h>
 
 FASTLED_USING_NAMESPACE
+
+// Version info
+#define VERSION "1.0.0"
+#define BUILD_DATE "2024-10-24"
+
+// Animation speeds
 #define FORWARD 0
 #define BACKWARD 1
 #define SLOW 250
@@ -20,7 +38,7 @@ FASTLED_USING_NAMESPACE
 // animations patterns and have them automatically rotate.
 //
 // -Mark Kriegsman, December 2014
-// Adapted for M5StickC Plus 2
+// Adapted for M5StickC Plus 2 by John Cohn
 
 
 #define DATA_PIN 32        // G32 on Grove connector (white wire)
@@ -42,6 +60,7 @@ void setup() {
   M5.Display.setTextColor(WHITE);
   M5.Display.setTextSize(1);
   M5.Display.drawString("FastLED Demo", 10, 10);
+  M5.Display.drawString("v" + String(VERSION), 10, 20);
   M5.Display.drawString("G32 -> LED Strip", 10, 30);
   
   Serial.begin(115200);
