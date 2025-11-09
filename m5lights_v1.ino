@@ -148,35 +148,26 @@ CRGB leds[NUM_LEDS];
 #define BRIGHTNESS 30      // Reduced brightness for lower current draw
 #define FRAMES_PER_SECOND 400
 
-// ESP-NOW Synchronization System
+// Simplified Mode System  
 enum NodeMode {
-  MODE_NORMAL,    // Standalone mode - runs patterns locally
-  MODE_LEAD,      // Lead mode - runs patterns and broadcasts LED states
-  MODE_FOLLOW,    // Follow mode - receives and displays LED states from leader
-  MODE_MUSIC      // Music mode - patterns react to microphone input
+  MODE_NORMAL,    // Standalone mode - runs patterns locally, no sync
+  MODE_MUSIC,     // Music mode - audio reactive patterns
+  MODE_MUSIC_LEADER // Music leader mode - broadcasts LED data to followers
 };
 
-// NEW: Pattern state synchronization message (much smaller!)
-struct PatternSyncMessage {
-  uint8_t messageType;      // 0x01 = pattern state, 0x02 = heartbeat
-  uint8_t patternNumber;    // Current pattern being displayed
-  uint32_t patternStartTime; // When this pattern started (for timing sync)
-  uint32_t currentTime;     // Leader's current millis() for sync
-  uint8_t globalHue;        // Current gHue value for color sync
-  uint32_t randomSeed;      // Random seed for synchronized randomness
-  uint16_t frameNumber;     // Frame counter for smooth sync
-  uint8_t reserved[8];      // Reserved for future pattern-specific params
-  uint8_t checksum;         // Simple checksum for data integrity
+// Simple LED data sync for music mode only
+struct MusicLEDSync {
+  uint8_t startIndex;       // LED start position (0-199)
+  uint8_t count;           // Number of LEDs in this packet (1-50)
+  uint8_t sequenceNum;     // Packet sequence for ordering
+  uint8_t rgbData[150];    // RGB data (max 50 LEDs = 150 bytes)
 };
 
-// Global synchronization variables
+// Simplified global variables
 NodeMode currentMode = MODE_NORMAL;
-unsigned long lastLeaderMessage = 0;
 unsigned long lastModeSwitch = 0;
-unsigned long lastLeaderCheck = 0;
-unsigned long buttonPressStart = 0;
-bool buttonPressed = false;
-bool leaderDetected = false;
+bool musicLeaderActive = false;           // True if we're receiving music leader data
+unsigned long lastMusicLeaderMessage = 0; // When we last received leader data
 uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}; // Broadcast to all
 
 // Pattern and animation globals (moved here for ESP-NOW callback access)
@@ -240,117 +231,37 @@ void onDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
 }
 
 void onDataReceived(const esp_now_recv_info* recv_info, const uint8_t *incomingData, int len) {
-  // Add debug output to verify callback is triggered
-  static unsigned long lastReceiveLog = 0;
-  if (millis() - lastReceiveLog > 1000) {
-    Serial.print("ESP-NOW received: len=");
-    Serial.print(len);
-    Serial.print(", expected=");
-    Serial.println(sizeof(PatternSyncMessage));
-    lastReceiveLog = millis();
+  // Only process LED data if we're in music mode (not leader)
+  if (currentMode != MODE_MUSIC) {
+    return; // Ignore if not in music follower mode
   }
   
-  // Safety checks
-  if (!recv_info || !incomingData) {
-    Serial.println("ESP-NOW: NULL data received");
-    return;
+  // Verify message size
+  if (len != sizeof(MusicLEDSync)) {
+    return; // Wrong message size
   }
   
-  if (len != sizeof(PatternSyncMessage)) {
-    Serial.print("ESP-NOW: Wrong message size. Got ");
-    Serial.print(len);
-    Serial.print(", expected ");
-    Serial.println(sizeof(PatternSyncMessage));
-    return;
-  }
+  MusicLEDSync receivedData;
+  memcpy(&receivedData, incomingData, sizeof(receivedData));
   
-  PatternSyncMessage receivedMessage;
-  memcpy(&receivedMessage, incomingData, sizeof(receivedMessage));
+  // Update last message time - we're receiving from a music leader
+  lastMusicLeaderMessage = millis();
+  musicLeaderActive = true;
   
-  // Debug: Show message contents
-  Serial.print("MSG: type=");
-  Serial.print(receivedMessage.messageType);
-  Serial.print(", pattern=");
-  Serial.print(receivedMessage.patternNumber);
-  
-  // Verify checksum - calculate over all bytes except checksum field
-  uint8_t calculatedChecksum = 0;
-  uint8_t* data = (uint8_t*)&receivedMessage;
-  for (int i = 0; i < sizeof(PatternSyncMessage) - 1; i++) {
-    calculatedChecksum ^= data[i];
-  }
-  
-  Serial.print(", checksum: calc=");
-  Serial.print(calculatedChecksum);
-  Serial.print(", recv=");
-  Serial.println(receivedMessage.checksum);
-  
-  if (calculatedChecksum != receivedMessage.checksum) {
-    Serial.println("CHECKSUM FAILED!");
-    return; // Invalid checksum
-  }
-  
-  Serial.println("Checksum OK - updating leader detection");
-  lastLeaderMessage = millis();
-  leaderDetected = true;
-  
-  // If we're in normal mode and detect a leader, switch to follow mode
-  if (currentMode == MODE_NORMAL) {
-    Serial.print("In NORMAL mode, switching to FOLLOW. Current mode=");
-    Serial.println(currentMode);
-    switchToFollowMode();
-    Serial.print("After switch, current mode=");
-    Serial.println(currentMode);
-  } else {
-    Serial.print("Not in NORMAL mode. Current mode=");
-    Serial.println(currentMode);
-  }
-  
-  // Handle pattern synchronization in follow mode
-  if (currentMode == MODE_FOLLOW) {
-    Serial.println("Processing message in FOLLOW mode");
-    if (receivedMessage.messageType == 0x01) {
-      // Pattern state message - synchronize our pattern execution
-      Serial.print("Applying pattern sync: pattern=");
-      Serial.print(receivedMessage.patternNumber);
-      Serial.print(", frame=");
-      Serial.println(receivedMessage.frameNumber);
-      // Update synchronization variables from leader
-      if (gCurrentPatternNumber != receivedMessage.patternNumber) {
-        Serial.print("PATTERN CHANGE from leader: ");
-        Serial.print(gCurrentPatternNumber);
-        Serial.print(" -> ");
-        Serial.println(receivedMessage.patternNumber);
-        gCurrentPatternNumber = receivedMessage.patternNumber;
-      }
-      gHue = receivedMessage.globalHue;
-      leaderPatternStartTime = receivedMessage.patternStartTime;
-      timeOffset = millis() - receivedMessage.currentTime;
-      
-      // Sync random seed for consistent randomness
-      if (syncedRandomSeed != receivedMessage.randomSeed) {
-        syncedRandomSeed = receivedMessage.randomSeed;
-        random16_set_seed(syncedRandomSeed);
-      }
-      
-      // Enable pattern synchronization
-      patternSyncActive = true;
-      lastFrameNumber = receivedMessage.frameNumber;
-    } else if (receivedMessage.messageType == 0x02) {
-      // Heartbeat message - keeps us in follow mode
-      Serial.print("Heartbeat from leader, pattern=");
-      Serial.println(receivedMessage.patternNumber);
-      // Update pattern from heartbeat too in case we missed a pattern message
-      if (gCurrentPatternNumber != receivedMessage.patternNumber) {
-        Serial.print("PATTERN CHANGE from heartbeat: ");
-        Serial.print(gCurrentPatternNumber);
-        Serial.print(" -> ");
-        Serial.println(receivedMessage.patternNumber);
-        gCurrentPatternNumber = receivedMessage.patternNumber;
-      }
+  // Apply LED data directly to our strip
+  for (int i = 0; i < receivedData.count && i < 50; i++) {
+    int ledIndex = receivedData.startIndex + i;
+    if (ledIndex < NUM_LEDS) {
+      int dataIndex = i * 3;
+      leds[ledIndex].r = receivedData.rgbData[dataIndex];
+      leds[ledIndex].g = receivedData.rgbData[dataIndex + 1];
+      leds[ledIndex].b = receivedData.rgbData[dataIndex + 2];
     }
-  } else {
-    Serial.println("NOT in follow mode, ignoring message processing");
+  }
+  
+  // If this is the last packet (startIndex + count >= NUM_LEDS), show the LEDs
+  if (receivedData.startIndex + receivedData.count >= NUM_LEDS) {
+    FastLED.show();
   }
 }
 
@@ -521,34 +432,13 @@ void loop() {
 
 #define ARRAY_SIZE(A) (sizeof(A) / sizeof((A)[0]))
 
-// Mode switching and helper functions
+// Simplified mode switching functions
 void switchToNormalMode() {
   if (currentMode != MODE_NORMAL) {
     currentMode = MODE_NORMAL;
     lastModeSwitch = millis();
-    leaderDetected = false;
-    patternSyncActive = false;
+    musicLeaderActive = false;
     Serial.println("*** SWITCHED TO NORMAL MODE ***");
-    updateDisplay();
-  }
-}
-
-void switchToLeadMode() {
-  if (currentMode != MODE_LEAD) {
-    currentMode = MODE_LEAD;
-    lastModeSwitch = millis();
-    leaderDetected = false;
-    patternSyncActive = false;
-    Serial.println("*** SWITCHED TO LEAD MODE ***");
-    updateDisplay();
-  }
-}
-
-void switchToFollowMode() {
-  if (currentMode != MODE_FOLLOW) {
-    currentMode = MODE_FOLLOW;
-    lastModeSwitch = millis();
-    Serial.println("*** SWITCHED TO FOLLOW MODE ***");
     updateDisplay();
   }
 }
@@ -557,9 +447,18 @@ void switchToMusicMode() {
   if (currentMode != MODE_MUSIC) {
     currentMode = MODE_MUSIC;
     lastModeSwitch = millis();
-    leaderDetected = false;
-    patternSyncActive = false;
+    musicLeaderActive = false;
     Serial.println("*** SWITCHED TO MUSIC MODE ***");
+    updateDisplay();
+  }
+}
+
+void switchToMusicLeaderMode() {
+  if (currentMode != MODE_MUSIC_LEADER) {
+    currentMode = MODE_MUSIC_LEADER;
+    lastModeSwitch = millis();
+    musicLeaderActive = false;
+    Serial.println("*** SWITCHED TO MUSIC LEADER MODE ***");
     updateDisplay();
   }
 }
