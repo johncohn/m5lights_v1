@@ -1,11 +1,18 @@
 /// @file    m5lights_v1.ino
 /// @brief   FastLED demo reel adapted for M5StickC Plus 2
-/// @version 2.6.2
+/// @version 2.7.0
 /// @date    2024-10-26
 /// @author  John Cohn (adapted from Mark Kriegsman)
 /// @example m5lights_v1.ino
 ///
 /// @changelog
+/// v2.7.0 (2024-10-26) - Ultra-Simple ESP-NOW LED Sync
+///   - Completely redesigned ESP-NOW: direct LED data transmission
+///   - Any mode can be leader: Normal Leader or Music Leader
+///   - Button logic: Short press = Normal↔Music, Long press = Become Leader
+///   - Instant LED synchronization with zero processing delay on followers
+///   - Eliminated complex pattern coordination and timing issues
+///   - Simple 153-byte LED data packets (50 LEDs per packet)
 /// v2.6.2 (2024-10-26) - Pattern Names in Music Mode
 ///   - Music mode now shows current pattern name at top of display
 ///   - Layout: Pattern name (line 1), Audio % (line 2), Beat status (line 3)
@@ -148,26 +155,27 @@ CRGB leds[NUM_LEDS];
 #define BRIGHTNESS 30      // Reduced brightness for lower current draw
 #define FRAMES_PER_SECOND 400
 
-// Simplified Mode System  
+// Ultra-Simple Mode System  
 enum NodeMode {
-  MODE_NORMAL,    // Standalone mode - runs patterns locally, no sync
-  MODE_MUSIC,     // Music mode - audio reactive patterns
-  MODE_MUSIC_LEADER // Music leader mode - broadcasts LED data to followers
+  MODE_NORMAL,        // Standalone normal patterns, no sync
+  MODE_MUSIC,         // Standalone music-reactive patterns, no sync
+  MODE_NORMAL_LEADER, // Normal patterns + broadcast LED data
+  MODE_MUSIC_LEADER   // Music patterns + broadcast LED data
 };
 
-// Simple LED data sync for music mode only
-struct MusicLEDSync {
+// Simple LED data sync for any leader mode
+struct LEDSync {
   uint8_t startIndex;       // LED start position (0-199)
   uint8_t count;           // Number of LEDs in this packet (1-50)
   uint8_t sequenceNum;     // Packet sequence for ordering
   uint8_t rgbData[150];    // RGB data (max 50 LEDs = 150 bytes)
 };
 
-// Simplified global variables
+// Ultra-simple global variables
 NodeMode currentMode = MODE_NORMAL;
 unsigned long lastModeSwitch = 0;
-bool musicLeaderActive = false;           // True if we're receiving music leader data
-unsigned long lastMusicLeaderMessage = 0; // When we last received leader data
+bool leaderDataActive = false;            // True if we're receiving leader data
+unsigned long lastLeaderMessage = 0;     // When we last received leader data
 uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}; // Broadcast to all
 
 // Pattern and animation globals (moved here for ESP-NOW callback access)
@@ -231,22 +239,22 @@ void onDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
 }
 
 void onDataReceived(const esp_now_recv_info* recv_info, const uint8_t *incomingData, int len) {
-  // Only process LED data if we're in music mode (not leader)
-  if (currentMode != MODE_MUSIC) {
-    return; // Ignore if not in music follower mode
+  // Only process LED data if we're in follower mode (Normal or Music, not Leader)
+  if (currentMode == MODE_NORMAL_LEADER || currentMode == MODE_MUSIC_LEADER) {
+    return; // Ignore if we're a leader ourselves
   }
   
   // Verify message size
-  if (len != sizeof(MusicLEDSync)) {
+  if (len != sizeof(LEDSync)) {
     return; // Wrong message size
   }
   
-  MusicLEDSync receivedData;
+  LEDSync receivedData;
   memcpy(&receivedData, incomingData, sizeof(receivedData));
   
-  // Update last message time - we're receiving from a music leader
-  lastMusicLeaderMessage = millis();
-  musicLeaderActive = true;
+  // Update last message time - we're receiving from a leader
+  lastLeaderMessage = millis();
+  leaderDataActive = true;
   
   // Apply LED data directly to our strip
   for (int i = 0; i < receivedData.count && i < 50; i++) {
@@ -337,6 +345,40 @@ void setupESPNOW() {
   }
   
   Serial.println("ESP-NOW setup completed");
+}
+
+// Broadcast LED data in chunks for leader modes
+void broadcastLEDData() {
+  const int LEDS_PER_PACKET = 50;  // 50 LEDs = 150 bytes RGB data
+  static uint8_t sequenceNum = 0;
+  
+  LEDSync message;
+  message.sequenceNum = sequenceNum++;
+  
+  for (int startIdx = 0; startIdx < NUM_LEDS; startIdx += LEDS_PER_PACKET) {
+    message.startIndex = startIdx;
+    message.count = min(LEDS_PER_PACKET, NUM_LEDS - startIdx);
+    
+    // Pack RGB data
+    for (int i = 0; i < message.count; i++) {
+      int ledIdx = startIdx + i;
+      int dataIdx = i * 3;
+      message.rgbData[dataIdx] = leds[ledIdx].r;
+      message.rgbData[dataIdx + 1] = leds[ledIdx].g;
+      message.rgbData[dataIdx + 2] = leds[ledIdx].b;
+    }
+    
+    // Send packet
+    esp_err_t result = esp_now_send(broadcastAddress, (uint8_t*)&message, sizeof(message));
+    if (result != ESP_OK) {
+      static unsigned long lastErrorLog = 0;
+      if (millis() - lastErrorLog > 1000) {
+        Serial.print("ESP-NOW send error: ");
+        Serial.println(result);
+        lastErrorLog = millis();
+      }
+    }
+  }
 }
 
 // Button interrupt handler
@@ -432,12 +474,12 @@ void loop() {
 
 #define ARRAY_SIZE(A) (sizeof(A) / sizeof((A)[0]))
 
-// Simplified mode switching functions
+// Ultra-simple mode switching functions
 void switchToNormalMode() {
   if (currentMode != MODE_NORMAL) {
     currentMode = MODE_NORMAL;
     lastModeSwitch = millis();
-    musicLeaderActive = false;
+    leaderDataActive = false;
     Serial.println("*** SWITCHED TO NORMAL MODE ***");
     updateDisplay();
   }
@@ -447,8 +489,18 @@ void switchToMusicMode() {
   if (currentMode != MODE_MUSIC) {
     currentMode = MODE_MUSIC;
     lastModeSwitch = millis();
-    musicLeaderActive = false;
+    leaderDataActive = false;
     Serial.println("*** SWITCHED TO MUSIC MODE ***");
+    updateDisplay();
+  }
+}
+
+void switchToNormalLeaderMode() {
+  if (currentMode != MODE_NORMAL_LEADER) {
+    currentMode = MODE_NORMAL_LEADER;
+    lastModeSwitch = millis();
+    leaderDataActive = false;
+    Serial.println("*** SWITCHED TO NORMAL LEADER MODE ***");
     updateDisplay();
   }
 }
@@ -457,7 +509,7 @@ void switchToMusicLeaderMode() {
   if (currentMode != MODE_MUSIC_LEADER) {
     currentMode = MODE_MUSIC_LEADER;
     lastModeSwitch = millis();
-    musicLeaderActive = false;
+    leaderDataActive = false;
     Serial.println("*** SWITCHED TO MUSIC LEADER MODE ***");
     updateDisplay();
   }
@@ -473,16 +525,16 @@ void updateDisplay() {
       backgroundColor = GREEN;
       textColor = BLACK;
       break;
-    case MODE_LEAD:
+    case MODE_MUSIC:
+      backgroundColor = PURPLE;
+      textColor = WHITE;
+      break;
+    case MODE_NORMAL_LEADER:
       backgroundColor = ORANGE;
       textColor = BLACK;
       break;
-    case MODE_FOLLOW:
-      backgroundColor = BLUE;
-      textColor = BLACK;
-      break;
-    case MODE_MUSIC:
-      backgroundColor = PURPLE;
+    case MODE_MUSIC_LEADER:
+      backgroundColor = RED;
       textColor = WHITE;
       break;
     default:
@@ -503,17 +555,17 @@ void updateDisplay() {
   String modeStr = "";
   switch (currentMode) {
     case MODE_NORMAL: modeStr = "NORMAL"; break;
-    case MODE_LEAD: modeStr = "LEAD"; break;
-    case MODE_FOLLOW: modeStr = "FOLLOW"; break;
     case MODE_MUSIC: modeStr = "MUSIC"; break;
+    case MODE_NORMAL_LEADER: modeStr = "NORMAL LEADER"; break;
+    case MODE_MUSIC_LEADER: modeStr = "MUSIC LEADER"; break;
   }
   M5.Display.drawString("Mode: " + modeStr, 10, 35);
   
-  // Pattern info (for normal and lead modes)
-  if (currentMode == MODE_FOLLOW) {
-    M5.Display.drawString("Following...", 10, 50);
-  } else if (currentMode == MODE_MUSIC) {
-    // Show current pattern name in music mode too
+  // Pattern info based on mode
+  if (leaderDataActive && (currentMode == MODE_NORMAL || currentMode == MODE_MUSIC)) {
+    M5.Display.drawString("Following Leader...", 10, 50);
+  } else if (currentMode == MODE_MUSIC || currentMode == MODE_MUSIC_LEADER) {
+    // Show current pattern name in music modes
     if (gCurrentPatternNumber < ARRAY_SIZE(patternNames)) {
       String patternDisplay = String(gCurrentPatternNumber) + ": " + String(patternNames[gCurrentPatternNumber]);
       M5.Display.drawString(patternDisplay, 10, 50);
@@ -523,7 +575,7 @@ void updateDisplay() {
     M5.Display.drawString("Audio: " + String((int)(audioLevel * 100)) + "%", 10, 65);
     M5.Display.drawString("Beat: " + String(beatDetected ? "YES" : "NO"), 10, 80);
   } else {
-    // Show pattern name instead of just number
+    // Normal modes - show pattern name
     if (gCurrentPatternNumber < ARRAY_SIZE(patternNames)) {
       String patternDisplay = String(gCurrentPatternNumber) + ": " + String(patternNames[gCurrentPatternNumber]);
       M5.Display.drawString(patternDisplay, 10, 50);
@@ -574,17 +626,15 @@ void handleButtonLogic() {
         Serial.print(duration);
         Serial.print("ms) ===");
         
-        if (currentMode == MODE_NORMAL) {
+        // Short press: Toggle Normal ↔ Music (no leader modes)
+        if (currentMode == MODE_NORMAL || currentMode == MODE_NORMAL_LEADER) {
           switchToMusicMode();
           Serial.println(" -> MUSIC mode");
-        } else if (currentMode == MODE_MUSIC) {
+        } else if (currentMode == MODE_MUSIC || currentMode == MODE_MUSIC_LEADER) {
           nextPattern();
           switchToNormalMode();
           Serial.print(" -> NORMAL mode, Pattern: ");
           Serial.println(gCurrentPatternNumber);
-        } else {
-          switchToNormalMode();
-          Serial.println(" -> NORMAL mode");
         }
         updateDisplay();
         
@@ -592,9 +642,14 @@ void handleButtonLogic() {
         lastAction = now;
         
       } else if (now - buttonPressTime >= LONG_PRESS_TIME_MS) {
-        // Long press triggered
-        Serial.println("=== Long press -> LEAD mode ===");
-        switchToLeadMode();
+        // Long press: Become leader of current mode
+        if (currentMode == MODE_NORMAL || currentMode == MODE_NORMAL_LEADER) {
+          Serial.println("=== Long press -> NORMAL LEADER mode ===");
+          switchToNormalLeaderMode();
+        } else if (currentMode == MODE_MUSIC || currentMode == MODE_MUSIC_LEADER) {
+          Serial.println("=== Long press -> MUSIC LEADER mode ===");
+          switchToMusicLeaderMode();
+        }
         updateDisplay();
         
         buttonState = BTN_LONG_TRIGGERED;
