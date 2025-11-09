@@ -1,11 +1,20 @@
 /// @file    m5lights_v1.ino
 /// @brief   FastLED demo reel adapted for M5StickC Plus 2
-/// @version 2.6.0
+/// @version 2.6.2
 /// @date    2024-10-26
 /// @author  John Cohn (adapted from Mark Kriegsman)
 /// @example m5lights_v1.ino
 ///
 /// @changelog
+/// v2.6.2 (2024-10-26) - Pattern Names in Music Mode
+///   - Music mode now shows current pattern name at top of display
+///   - Layout: Pattern name (line 1), Audio % (line 2), Beat status (line 3)
+///   - Consistent pattern identification across all modes
+/// v2.6.1 (2024-10-26) - Pattern Names on Display
+///   - Display now shows pattern names instead of just numbers
+///   - Format: "0: Rainbow", "6: Fire", "7: Lightning", etc.
+///   - All 12 patterns have descriptive names for easy identification
+///   - Added bounds checking to prevent display errors
 /// v2.6.0 (2024-10-26) - Expanded Pattern Library from oldplayalights
 ///   - Added 6 new patterns for total of 12 patterns (doubled from 6)
 ///   - 🔥 Fire pattern with realistic heat simulation and mirrored flames
@@ -483,6 +492,12 @@ SimplePatternList gPatterns = {
   fire, lightningStorm, plasmaField, meteorShower, auroraWaves, lavaFlow
 };
 
+// Pattern names for display
+const char* patternNames[] = {
+  "Rainbow", "Chase", "Juggle", "Rainbow+Glitter", "Confetti", "BPM",
+  "Fire", "Lightning", "Plasma", "Meteors", "Aurora", "Lava"
+};
+
 // Moved to top for ESP-NOW callback access
 
 void loop() {
@@ -599,11 +614,23 @@ void updateDisplay() {
   if (currentMode == MODE_FOLLOW) {
     M5.Display.drawString("Following...", 10, 50);
   } else if (currentMode == MODE_MUSIC) {
-    M5.Display.drawString("Audio: " + String((int)(audioLevel * 100)) + "%", 10, 50);
-    M5.Display.drawString("Beats: " + String(beatCount), 10, 65);
+    // Show current pattern name in music mode too
+    if (gCurrentPatternNumber < ARRAY_SIZE(patternNames)) {
+      String patternDisplay = String(gCurrentPatternNumber) + ": " + String(patternNames[gCurrentPatternNumber]);
+      M5.Display.drawString(patternDisplay, 10, 50);
+    } else {
+      M5.Display.drawString("Pattern: " + String(gCurrentPatternNumber), 10, 50);
+    }
+    M5.Display.drawString("Audio: " + String((int)(audioLevel * 100)) + "%", 10, 65);
     M5.Display.drawString("Beat: " + String(beatDetected ? "YES" : "NO"), 10, 80);
   } else {
-    M5.Display.drawString("Pattern: " + String(gCurrentPatternNumber), 10, 50);
+    // Show pattern name instead of just number
+    if (gCurrentPatternNumber < ARRAY_SIZE(patternNames)) {
+      String patternDisplay = String(gCurrentPatternNumber) + ": " + String(patternNames[gCurrentPatternNumber]);
+      M5.Display.drawString(patternDisplay, 10, 50);
+    } else {
+      M5.Display.drawString("Pattern: " + String(gCurrentPatternNumber), 10, 50);
+    }
   }
   
   // Additional status
