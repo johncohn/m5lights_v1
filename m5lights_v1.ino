@@ -1,11 +1,20 @@
 /// @file    m5lights_v1.ino
 /// @brief   FastLED demo reel adapted for M5StickC Plus 2
-/// @version 2.5.1
+/// @version 2.6.0
 /// @date    2024-10-26
 /// @author  John Cohn (adapted from Mark Kriegsman)
 /// @example m5lights_v1.ino
 ///
 /// @changelog
+/// v2.6.0 (2024-10-26) - Expanded Pattern Library from oldplayalights
+///   - Added 6 new patterns for total of 12 patterns (doubled from 6)
+///   - 🔥 Fire pattern with realistic heat simulation and mirrored flames
+///   - ⚡ Lightning Storm with dramatic white strikes on stormy background
+///   - 🌌 Plasma Field with multiple overlapping sine waves (perfect for music)
+///   - ☄️ Meteor Shower with trailing meteors and varying speeds
+///   - 🌈 Aurora Waves with flowing green-blue aurora effects
+///   - 🌋 Lava Flow with organic noise-based molten lava colors
+///   - All new patterns optimized for music-reactive mode
 /// v2.5.1 (2024-10-26) - High Contrast Music Mode Brightness
 ///   - Increased brightness range from 10-30 to 2-96 for dramatic effect
 ///   - Music mode now goes from almost off to full brightness
@@ -469,7 +478,10 @@ void setup() {
 // List of patterns to cycle through.  Each is defined as a separate function below.
 typedef void (*SimplePatternList[])();
 //SimplePatternList gPatterns = { rainbow, rainbowWithGlitter, confetti, sinelon, juggle, bpm };
-SimplePatternList gPatterns = {  rainbow, doChase,juggle, rainbowWithGlitter, confetti,  bpm };
+SimplePatternList gPatterns = { 
+  rainbow, doChase, juggle, rainbowWithGlitter, confetti, bpm,
+  fire, lightningStorm, plasmaField, meteorShower, auroraWaves, lavaFlow
+};
 
 // Moved to top for ESP-NOW callback access
 
@@ -1130,6 +1142,213 @@ void juggle() {
     dothue += 32;
   }
 }
+
+// NEW PATTERNS ADDED FROM OLDPLAYALIGHTS 🔥
+
+void fire() {
+  // Realistic fire simulation using heat array
+  static uint8_t heat[NUM_LEDS/2];
+  int half = NUM_LEDS/2;
+  uint8_t cooling = 55;  // Adjustable cooling rate
+  uint8_t sparking = 120; // Adjustable spark rate
+  
+  // Step 1: Cool down every cell a little
+  for(int i = 0; i < half; i++) {
+    heat[i] = qsub8(heat[i], random8(0, ((cooling * 10) / half) + 2));
+  }
+  
+  // Step 2: Heat from each cell drifts up and diffuses
+  for(int k = half - 1; k >= 2; k--) {
+    heat[k] = (heat[k - 1] + heat[k - 2] + heat[k - 2]) / 3;
+  }
+  
+  // Step 3: Randomly ignite new sparks near bottom
+  if(random8() < sparking) {
+    int y = random8(7);
+    heat[y] = qadd8(heat[y], random8(160, 255));
+  }
+  
+  // Step 4: Convert heat to LED colors (mirrored for full strip)
+  for(int j = 0; j < half; j++) {
+    CRGB color = ColorFromPalette(HeatColors_p, scale8(heat[j], 240));
+    leds[half + j] = color;
+    leds[half - 1 - j] = color;  // Mirror effect
+  }
+}
+
+void lightningStorm() {
+  // Dark stormy background with lightning strikes
+  static unsigned long lastStrike = 0;
+  unsigned long currentTime = millis();
+  
+  // Fade to dark blue stormy background
+  for(int i = 0; i < NUM_LEDS; i++) {
+    leds[i].nscale8(220); // Fade existing
+    leds[i] += CRGB(0, 0, 15); // Add dark blue atmosphere
+  }
+  
+  // Random lightning strikes
+  if(currentTime - lastStrike > random16(100, 2000)) {
+    lastStrike = currentTime;
+    
+    // Lightning strike position and length
+    int strikePos = random16(NUM_LEDS - 30);
+    int strikeLength = random8(10, 25);
+    
+    // Bright white lightning
+    for(int i = strikePos; i < strikePos + strikeLength && i < NUM_LEDS; i++) {
+      leds[i] = CRGB(255, 255, 255); // Bright white
+    }
+    
+    // Secondary weaker strikes
+    if(random8() < 150) {
+      int secondaryPos = strikePos + random8(-5, 5);
+      int secondaryLen = random8(5, 12);
+      for(int i = secondaryPos; i < secondaryPos + secondaryLen && i >= 0 && i < NUM_LEDS; i++) {
+        leds[i] = CRGB(200, 200, 255); // Bluish lightning
+      }
+    }
+  }
+}
+
+void plasmaField() {
+  // Multiple overlapping plasma waves - perfect for music!
+  static uint16_t plasmaTime = 0;
+  static uint8_t plasmaHue = 0;
+  
+  plasmaTime += 2;
+  plasmaHue += 1;
+  
+  for(int i = 0; i < NUM_LEDS; i++) {
+    // Multiple layered sine waves
+    uint8_t wave1 = sin8(plasmaTime/4 + i * 8);
+    uint8_t wave2 = sin8(plasmaTime/3 + i * 6 + 85);
+    uint8_t wave3 = sin8(plasmaTime/5 + i * 4 + 170);
+    uint8_t wave4 = sin8(plasmaTime/7 + i * 12);
+    
+    // Combine waves
+    uint8_t combined = (wave1/4 + wave2/3 + wave3/3 + wave4/6);
+    uint8_t hue = plasmaHue + combined/2;
+    uint8_t brightness = combined + sin8(plasmaTime/8 + i)/4;
+    
+    leds[i] = CHSV(hue, 240, brightness);
+  }
+}
+
+void meteorShower() {
+  // Multiple meteors with trails
+  struct Meteor {
+    int16_t pos;
+    uint8_t hue;
+    uint8_t size;
+    int8_t speed;
+  };
+  static Meteor meteors[6];
+  static bool initialized = false;
+  static unsigned long lastUpdate = 0;
+  
+  if(!initialized) {
+    for(int i = 0; i < 6; i++) {
+      meteors[i] = {(int16_t)(-random8(20)), (uint8_t)random8(), (uint8_t)(3 + random8(4)), (int8_t)(1 + random8(2))};
+    }
+    initialized = true;
+  }
+  
+  // Fade trail
+  fadeToBlackBy(leds, NUM_LEDS, 60);
+  
+  // Update meteors
+  if(millis() - lastUpdate > 50) {
+    lastUpdate = millis();
+    
+    for(int m = 0; m < 6; m++) {
+      Meteor &meteor = meteors[m];
+      
+      // Draw meteor trail
+      for(int t = 0; t < meteor.size; t++) {
+        int16_t trailPos = meteor.pos - t;
+        if(trailPos >= 0 && trailPos < NUM_LEDS) {
+          uint8_t brightness = map(t, 0, meteor.size-1, 255, 50);
+          leds[trailPos] += CHSV(meteor.hue, 200, brightness);
+        }
+      }
+      
+      // Move meteor
+      meteor.pos += meteor.speed;
+      
+      // Reset if off screen
+      if(meteor.pos >= NUM_LEDS + meteor.size) {
+        meteor.pos = -meteor.size;
+        meteor.hue = random8();
+        meteor.size = 3 + random8(4);
+        meteor.speed = 1 + random8(2);
+      }
+    }
+  }
+}
+
+void auroraWaves() {
+  // Flowing aurora waves - smooth and musical
+  static uint16_t wave1_pos = 0, wave2_pos = 0, wave3_pos = 0;
+  static uint8_t auroraHue = 96; // Start with green
+  
+  wave1_pos += 2;
+  wave2_pos += 3;
+  wave3_pos += 1;
+  
+  fill_solid(leds, NUM_LEDS, CRGB::Black);
+  
+  for(int i = 0; i < NUM_LEDS; i++) {
+    // Three overlapping aurora waves
+    uint8_t wave1 = sin8(wave1_pos + i * 4);
+    uint8_t wave2 = sin8(wave2_pos + i * 6 + 85);
+    uint8_t wave3 = sin8(wave3_pos + i * 2 + 170);
+    
+    // Aurora colors (green to blue)
+    uint8_t hue1 = auroraHue + sin8(i * 8)/8;
+    uint8_t hue2 = auroraHue + 40;
+    uint8_t hue3 = auroraHue + 80;
+    
+    // Only show bright parts of waves
+    if(wave1 > 100) {
+      leds[i] += CHSV(hue1, 255, (wave1-100)*2);
+    }
+    if(wave2 > 120) {
+      leds[i] += CHSV(hue2, 240, (wave2-120)*2);
+    }
+    if(wave3 > 140) {
+      leds[i] += CHSV(hue3, 200, (wave3-140)*3);
+    }
+  }
+  
+  // Slowly shift aurora color
+  if(random8() < 2) {
+    auroraHue += random8(5) - 2;
+    auroraHue = constrain(auroraHue, 80, 140);
+  }
+}
+
+void lavaFlow() {
+  // Flowing molten lava effect
+  for(int i = 0; i < NUM_LEDS; i++) {
+    // Use noise for organic flow
+    uint8_t heat = inoise8(i * 40, millis() / 60);
+    
+    // Create lava colors: black -> red -> orange -> yellow
+    CRGB color;
+    if(heat < 128) {
+      // Black to red gradient
+      color = CRGB(heat * 2, 0, 0);
+    } else {
+      // Red to orange to yellow
+      uint8_t excess = heat - 128;
+      color = CRGB(255, excess * 2, excess / 4);
+    }
+    
+    leds[i] = color;
+  }
+}
+
 // Changes all LEDS to given color
 void allColor(CRGB c) {
   for (int i = 0; i < NUM_LEDS; i++) {
