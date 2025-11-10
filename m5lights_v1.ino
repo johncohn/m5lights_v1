@@ -1,6 +1,6 @@
 /// @file    m5lights_v1_simple.ino
 /// @brief   Ultra-Simple ESP-NOW LED Sync with 12 Patterns + Music Mode
-/// @version 3.0.5
+/// @version 3.0.7
 /// @date    2024-10-26
 /// @author  John Cohn (adapted from Mark Kriegsman)
 ///
@@ -23,7 +23,7 @@
 FASTLED_USING_NAMESPACE
 
 // Version info
-#define VERSION "3.0.5"
+#define VERSION "3.0.7"
 
 // Hardware config
 #define LED_PIN 32
@@ -80,6 +80,10 @@ float noiseFloor = 0.01f;          // Moving average of quiet ambient sound
 float peakLevel = 0.1f;            // Moving average of loud sound peaks
 float noiseFloorSmooth = 0.998f;   // Slow adaptation for noise floor
 float peakLevelSmooth = 0.99f;     // Faster adaptation for peaks
+
+// Pattern control
+bool autoAdvancePatterns = true;   // Whether patterns auto-advance
+unsigned long lastPatternChange = 0;
 
 // Audio configuration
 static constexpr size_t MIC_BUF_LEN = 240;
@@ -461,6 +465,45 @@ void handleButtons() {
   }
 }
 
+// B Button handling for pattern control
+void handlePatternButtons() {
+  // Only allow pattern control when not following (not in blue mode)
+  if (leaderDataActive && (currentMode == MODE_NORMAL || currentMode == MODE_MUSIC)) {
+    return; // In follower mode (blue), disable pattern control
+  }
+  
+  static unsigned long bBtnPressTime = 0;
+  static bool bBtnWasPressed = false;
+  static bool bLongHandled = false;
+  
+  bool bBtnPressed = M5.BtnB.isPressed();
+  
+  if (bBtnPressed && !bBtnWasPressed) {
+    // B button just pressed
+    bBtnPressTime = millis();
+    bLongHandled = false;
+  } else if (!bBtnPressed && bBtnWasPressed) {
+    // B button just released
+    unsigned long pressDuration = millis() - bBtnPressTime;
+    
+    if (!bLongHandled && pressDuration < 1000) {
+      // Short press: advance to next pattern
+      nextPattern();
+      lastPatternChange = millis(); // Reset auto-advance timer
+      Serial.print("Manual pattern change to: ");
+      Serial.println(gCurrentPatternNumber);
+    }
+  } else if (bBtnPressed && !bLongHandled && (millis() - bBtnPressTime >= 1000)) {
+    // Long press: toggle auto-advance
+    autoAdvancePatterns = !autoAdvancePatterns;
+    bLongHandled = true;
+    Serial.print("Auto-advance patterns: ");
+    Serial.println(autoAdvancePatterns ? "ON" : "OFF");
+  }
+  
+  bBtnWasPressed = bBtnPressed;
+}
+
 // Display update
 void updateDisplay() {
   uint16_t backgroundColor;
@@ -560,6 +603,9 @@ void setup() {
   fill_solid(leds, NUM_LEDS, CRGB::Black);
   FastLED.show();
   
+  // Initialize pattern timing
+  lastPatternChange = millis();
+  
   updateDisplay();
   
   Serial.println("Simple LED Sync v" + String(VERSION) + " ready!");
@@ -570,6 +616,7 @@ void setup() {
 void loop() {
   M5.update();
   handleButtons();
+  handlePatternButtons();
   
   unsigned long currentTime = millis();
   
@@ -612,9 +659,8 @@ void loop() {
     lastDisplayUpdate = currentTime;
   }
   
-  // Auto-advance patterns every 15 seconds in all modes
-  static unsigned long lastPatternChange = 0;
-  if (currentTime - lastPatternChange > 15000) {
+  // Auto-advance patterns every 15 seconds in all modes (if enabled)
+  if (autoAdvancePatterns && currentTime - lastPatternChange > 15000) {
     nextPattern();
     lastPatternChange = currentTime;
   }
@@ -845,15 +891,39 @@ void auroraWaves() {
 }
 
 void lavaFlow() {
+  // Multiple moving heat layers for flowing lava effect
+  uint32_t time = millis();
+  uint16_t flow1 = time / 30;   // Fast flow
+  uint16_t flow2 = time / 80;   // Medium flow  
+  uint16_t flow3 = time / 150;  // Slow flow
+  
   for (int i = 0; i < NUM_LEDS; i++) {
-    uint8_t heat = inoise8(i * 40, millis() / 60);
+    // Create flowing noise layers with different speeds and scales
+    uint8_t heat1 = inoise8(i * 30, flow1);        // Fast small bubbles
+    uint8_t heat2 = inoise8(i * 80, flow2);        // Medium streams
+    uint8_t heat3 = inoise8(i * 150, flow3);       // Large slow flows
     
+    // Combine heat sources with weighted mixing
+    uint16_t totalHeat = (heat1 * 2 + heat2 * 3 + heat3 * 1) / 3;
+    totalHeat = constrain(totalHeat, 0, 255);
+    
+    // Create flowing lava color mapping
     CRGB color;
-    if (heat < 128) {
-      color = CRGB(heat * 2, 0, 0);
+    if (totalHeat < 80) {
+      // Cool/dark lava - deep red to black
+      color = CRGB(totalHeat, 0, 0);
+    } else if (totalHeat < 160) {
+      // Warm lava - red to orange
+      uint8_t progress = totalHeat - 80;
+      color = CRGB(80 + progress * 2, progress, 0);
+    } else if (totalHeat < 200) {
+      // Hot lava - orange to yellow  
+      uint8_t progress = totalHeat - 160;
+      color = CRGB(255, 160 + progress * 2, progress / 2);
     } else {
-      uint8_t excess = heat - 128;
-      color = CRGB(255, excess * 2, excess / 4);
+      // Molten white-hot lava
+      uint8_t progress = totalHeat - 200;
+      color = CRGB(255, 255, progress * 4);
     }
     
     leds[i] = color;
