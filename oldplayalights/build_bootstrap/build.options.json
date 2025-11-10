@@ -1,0 +1,9 @@
+{
+  "additionalFiles": "../..,../..,../..,../..,../..,../..,../..,../..,../..,../..,../..",
+  "compiler.optimization_flags": "-Os",
+  "customBuildProperties": "build.warn_data_percentage=75",
+  "fqbn": "esp32:esp32:m5stack_stickc_plus2",
+  "hardwareFolders": "/Users/johncohn/Library/Arduino15/packages",
+  "otherLibrariesFolders": "/Users/johncohn/Documents/Arduino/libraries",
+  "sketchLocation": "/Users/johncohn/Documents/Arduino/playalights_claude_v51"
+}

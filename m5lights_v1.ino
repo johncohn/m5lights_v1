@@ -1,119 +1,18 @@
-/// @file    m5lights_v1.ino
-/// @brief   FastLED demo reel adapted for M5StickC Plus 2
-/// @version 2.7.0
+/// @file    m5lights_v1_simple.ino
+/// @brief   Ultra-Simple ESP-NOW LED Sync with 12 Patterns + Music Mode
+/// @version 3.0.5
 /// @date    2024-10-26
 /// @author  John Cohn (adapted from Mark Kriegsman)
-/// @example m5lights_v1.ino
 ///
 /// @changelog
-/// v2.7.0 (2024-10-26) - Ultra-Simple ESP-NOW LED Sync
-///   - Completely redesigned ESP-NOW: direct LED data transmission
-///   - Any mode can be leader: Normal Leader or Music Leader
-///   - Button logic: Short press = Normal↔Music, Long press = Become Leader
-///   - Instant LED synchronization with zero processing delay on followers
-///   - Eliminated complex pattern coordination and timing issues
-///   - Simple 153-byte LED data packets (50 LEDs per packet)
-/// v2.6.2 (2024-10-26) - Pattern Names in Music Mode
-///   - Music mode now shows current pattern name at top of display
-///   - Layout: Pattern name (line 1), Audio % (line 2), Beat status (line 3)
-///   - Consistent pattern identification across all modes
-/// v2.6.1 (2024-10-26) - Pattern Names on Display
-///   - Display now shows pattern names instead of just numbers
-///   - Format: "0: Rainbow", "6: Fire", "7: Lightning", etc.
-///   - All 12 patterns have descriptive names for easy identification
-///   - Added bounds checking to prevent display errors
-/// v2.6.0 (2024-10-26) - Expanded Pattern Library from oldplayalights
-///   - Added 6 new patterns for total of 12 patterns (doubled from 6)
-///   - 🔥 Fire pattern with realistic heat simulation and mirrored flames
-///   - ⚡ Lightning Storm with dramatic white strikes on stormy background
-///   - 🌌 Plasma Field with multiple overlapping sine waves (perfect for music)
-///   - ☄️ Meteor Shower with trailing meteors and varying speeds
-///   - 🌈 Aurora Waves with flowing green-blue aurora effects
-///   - 🌋 Lava Flow with organic noise-based molten lava colors
-///   - All new patterns optimized for music-reactive mode
-/// v2.5.1 (2024-10-26) - High Contrast Music Mode Brightness
-///   - Increased brightness range from 10-30 to 2-96 for dramatic effect
-///   - Music mode now goes from almost off to full brightness
-///   - Maximum contrast based on current sound range
-/// v2.5.0 (2024-10-26) - Working Microphone Integration from oldplayalights
-///   - Fixed music mode crashes by using proper M5.Mic API calls
-///   - Integrated working microphone implementation from oldplayalights folder
-///   - Proper M5.Mic.begin() and M5.Mic.setSampleRate() initialization
-///   - Correct M5.Mic.record() buffer usage with 44100Hz sample rate
-///   - Real beat detection with BPM calculation and adaptive thresholds
-///   - Removed problematic PDM and analog fallback code
-/// v2.3.0 (2024-10-26) - Revolutionary Pattern State Synchronization
-///   - COMPLETE REDESIGN: Send pattern parameters instead of LED data (750 bytes -> 20 bytes)
-///   - Synchronized pattern execution for perfect real-time LED matching
-///   - Faster leader detection (10s -> 5s) and recovery (immediate)
-///   - Single-message synchronization with zero chunking delays
-///   - Followers execute same patterns locally with leader's timing parameters
-/// v2.2.1 (2024-10-26) - Ultra-Low Latency ESP-NOW & Button Fixes
-///   - Fixed inconsistent button responses requiring multiple presses
-///   - Dramatically reduced ESP-NOW latency with optimized chunking
-///   - Increased leader timeout to prevent frequent follower dropout
-///   - Removed delays between message chunks for real-time synchronization
-///   - Simplified button state machine for more reliable detection
-/// v2.2.0 (2024-10-26) - Non-blocking Architecture & Interrupt-based Buttons
-///   - Removed ALL blocking delay() calls - converted to non-blocking timing
-///   - Implemented interrupt-based button handling for 100% reliable detection
-///   - Fixed LED synchronization issues preventing proper follower display
-///   - Enhanced ESP-NOW timing without interference from blocking operations
-///   - Improved overall responsiveness and real-time performance
-/// v2.1.5 (2024-10-26) - Fixed ESP-NOW Synchronization Issues
-///   - Reduced leader timeout from 10s to 2s for faster response
-///   - Reduced leader check interval from 10s to 1s for better detection
-///   - Fixed follower LED control - now properly displays leader patterns only
-///   - Added automatic leader re-detection and rejoin capability
-///   - Improved button debug output with clearer state information
-///   - Enhanced follow mode to completely stop local pattern execution
-/// v2.1.4 (2024-10-24) - Robust Button State Machine
-///   - Implemented proper button state machine with 4 states (IDLE, PRESSED, LONG_TRIGGERED, COOLDOWN)
-///   - Fixed inconsistent mode switching behavior between devices
-///   - Added 300ms debouncing and 500ms cooldown to prevent rapid triggers
-///   - Much clearer debug output showing exact button states
-///   - Reliable short press (pattern/normal) and long press (lead) functionality
-/// v2.1.3 (2024-10-24) - Fixed Button Detection Logic
-///   - Fixed M5.BtnA.isPressed() detection for long press functionality
-///   - Hybrid approach using manual state tracking with M5 button detection
-///   - Proper button press/release cycle detection
-///   - Long press now works reliably for Lead mode switching
-/// v2.1.2 (2024-10-24) - Simplified Button Logic Fix
-///   - Completely rewritten button handling using M5's built-in methods
-///   - Fixed freezing issues during button press/release
-///   - Removed complex progress bar display that caused conflicts
-///   - Much more reliable long press detection (2s)
-///   - Better debouncing to prevent multiple triggers
-/// v2.1.1 (2024-10-24) - Critical ESP-NOW Stability Fix
-///   - Fixed ESP-NOW initialization crashes and "Peer interface is invalid" errors
-///   - Added comprehensive error handling for WiFi and ESP-NOW setup
-///   - Improved ESP-NOW callback safety with null pointer checks
-///   - Enhanced broadcast error handling to prevent device lockup
-///   - Added MAC address debugging output
-///   - Device now continues operation even if ESP-NOW setup fails
-/// v2.1.0 (2024-10-24) - Enhanced Button Controls & Visual Feedback
-///   - Fixed long press button detection with improved responsiveness
-///   - Added color-coded display backgrounds: Green=Normal, Orange=Lead, Blue=Follow
-///   - Reduced long press time to 2 seconds for better UX
-///   - Added visual progress bar and feedback for long press
-///   - Enhanced debug output for button detection
-///   - Better text contrast on colored backgrounds
-/// v2.0.0 (2024-10-24) - ESP-NOW Synchronization System
-///   - Added three-mode operation: Normal, Lead, Follow
-///   - ESP-NOW wireless synchronization between multiple devices
-///   - Lead mode broadcasts LED states to all followers
-///   - Follow mode receives and displays leader's LED patterns
-///   - Automatic leader discovery and timeout handling
-///   - Button controls: long press -> Lead, short press -> Normal/Next Pattern
-///   - Updated display to show current mode and status
-///   - 10-second timeout for follow mode, auto-fallback to normal
-/// v1.0.0 (2024-10-24) - Initial release
-///   - Ported FastLED demo from ESP32-S3 to M5StickC Plus 2
-///   - Support for 250 WS2811/WS2812 LEDs on G32 pin
-///   - 6 animation patterns with auto-cycling and manual control
-///   - M5StickC Plus 2 display integration with pattern info
-///   - Button A for manual pattern switching
-///   - Auto-cycle every 5 seconds
+/// v3.0.0 (2024-10-26) - Clean Ultra-Simple ESP-NOW Implementation
+///   - Complete rewrite with simple 4-mode system
+///   - Normal, Music, Normal Leader, Music Leader modes
+///   - Button: Short press = Normal↔Music, Long press = Become Leader
+///   - Direct LED data sync (153 bytes per packet, 50 LEDs)
+///   - Zero processing delay on followers
+///   - All 12 patterns from v2.6 + working music system
+///   - High contrast music mode (2-96 brightness range)
 
 #include <M5StickCPlus2.h>
 #include <FastLED.h>
@@ -124,140 +23,149 @@
 FASTLED_USING_NAMESPACE
 
 // Version info
-#define VERSION "2.3.3"
-#define BUILD_DATE "2025-10-24"
+#define VERSION "3.0.5"
 
-// Animation speeds
-#define FORWARD 0
-#define BACKWARD 1
-#define SLOW 250
-#define MEDIUM 50
-#define FAST 5
-
-// FastLED "100-lines-of-code" demo reel, showing just a few
-// of the kinds of animation patterns you can quickly and easily
-// compose using FastLED.
-//
-// This example also shows one easy way to define multiple
-// animations patterns and have them automatically rotate.
-//
-// -Mark Kriegsman, December 2014
-// Adapted for M5StickC Plus 2 by John Cohn
-
-
-#define DATA_PIN 32        // G32 on Grove connector (white wire)
-//#define CLK_PIN   4
-#define LED_TYPE WS2811
+// Hardware config
+#define LED_PIN 32
+#define NUM_LEDS 200
+#define BRIGHTNESS 30
 #define COLOR_ORDER GRB
-#define NUM_LEDS 200       // Reduced count for lower power consumption
-CRGB leds[NUM_LEDS];
+#define CHIPSET WS2811
 
-#define BRIGHTNESS 30      // Reduced brightness for lower current draw
-#define FRAMES_PER_SECOND 400
+CRGB leds[NUM_LEDS];
 
 // Ultra-Simple Mode System  
 enum NodeMode {
   MODE_NORMAL,        // Standalone normal patterns, no sync
-  MODE_MUSIC,         // Standalone music-reactive patterns, no sync
+  MODE_MUSIC,         // Standalone music-reactive patterns, no sync  
   MODE_NORMAL_LEADER, // Normal patterns + broadcast LED data
   MODE_MUSIC_LEADER   // Music patterns + broadcast LED data
 };
 
-// Simple LED data sync for any leader mode
+// Simple LED data sync message
 struct LEDSync {
   uint8_t startIndex;       // LED start position (0-199)
   uint8_t count;           // Number of LEDs in this packet (1-50)
   uint8_t sequenceNum;     // Packet sequence for ordering
-  uint8_t rgbData[150];    // RGB data (max 50 LEDs = 150 bytes)
+  uint8_t brightness;      // Current brightness (for audio sync)
+  uint8_t rgbData[149];    // RGB data (max 49 LEDs = 147 bytes, reduced by 1 for brightness)
 };
 
-// Ultra-simple global variables
+// Global variables
 NodeMode currentMode = MODE_NORMAL;
 unsigned long lastModeSwitch = 0;
-bool leaderDataActive = false;            // True if we're receiving leader data
-unsigned long lastLeaderMessage = 0;     // When we last received leader data
-uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}; // Broadcast to all
+bool leaderDataActive = false;
+unsigned long lastLeaderMessage = 0;
+uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
-// Pattern and animation globals (moved here for ESP-NOW callback access)
-uint8_t gCurrentPatternNumber = 0;  // Index number of which pattern is current  
-uint8_t gHue = 0;                   // rotating "base color" used by many of the patterns
+// Pattern globals
+uint8_t gCurrentPatternNumber = 0;
+uint8_t gHue = 0;
 
-// Music mode variables - using working oldplayalights implementation
+// Audio system variables (from working v2.6 implementation)
 float soundMin = 1.0f;
 float soundMax = 0.0f;
 float musicLevel = 0.0f;
-float audioLevel = 0.0f;             // Current audio level (0.0 to 1.0) - for compatibility
-bool beatDetected = false;           // True when beat detected
+float audioLevel = 0.0f;
+bool beatDetected = false;
 bool prevAbove = false;
 uint32_t beatTimes[50];
 uint8_t beatCount = 0;
 uint32_t lastBpmMillis = 0;
 bool audioDetected = true;
-uint8_t musicBrightness = BRIGHTNESS; // Dynamic brightness based on audio
+uint8_t musicBrightness = BRIGHTNESS;
 
-// Audio configuration (matching working implementation)
+// Adaptive audio scaling
+float noiseFloor = 0.01f;          // Moving average of quiet ambient sound
+float peakLevel = 0.1f;            // Moving average of loud sound peaks
+float noiseFloorSmooth = 0.998f;   // Slow adaptation for noise floor
+float peakLevelSmooth = 0.99f;     // Faster adaptation for peaks
+
+// Audio configuration
 static constexpr size_t MIC_BUF_LEN = 240;
 static constexpr int MIC_SR = 44100;
 static constexpr float SMOOTH = 0.995f;
 static constexpr uint32_t BPM_WINDOW = 5000;
 
-// NEW: Follower synchronization variables
-unsigned long leaderPatternStartTime = 0;
-unsigned long timeOffset = 0; // Difference between leader and follower clocks
-uint32_t syncedRandomSeed = 0;
-uint16_t lastFrameNumber = 0;
-bool patternSyncActive = false;
-
-// Interrupt-based button handling  
+// Button handling
 volatile bool buttonStateChanged = false;
 volatile bool buttonCurrentState = false;
 volatile unsigned long buttonLastInterrupt = 0;
-
-// Non-blocking timing variables
-unsigned long lastPatternUpdate = 0;
-unsigned long lastBroadcast = 0;
-unsigned long lastHeartbeat = 0;
 unsigned long lastDisplayUpdate = 0;
+unsigned long lastBroadcast = 0;
 
 // Timing constants
-#define LEADER_TIMEOUT_MS 5000       // 5 seconds to prevent frequent dropout
-#define LEADER_CHECK_INTERVAL_MS 50     // Check for leader every 50ms (much faster detection)
-#define LONG_PRESS_TIME_MS 1500      // 1.5 seconds for long press (faster response)
-#define SYNC_SEND_INTERVAL_MS 50     // Send pattern state every 50ms (20 FPS)
-#define LEADER_HEARTBEAT_INTERVAL_MS 50   // Send heartbeat every 50ms for real-time sync
+#define LONG_PRESS_TIME_MS 1500
+#define BROADCAST_INTERVAL_MS 50
+#define LEADER_TIMEOUT_MS 3000
 
-// ESP-NOW callback functions
+// Pattern function declarations
+void rainbow();
+void doChase();
+void juggle();
+void rainbowWithGlitter();
+void confetti();
+void bpm();
+void fire();
+void lightningStorm();
+void plasmaField();
+void meteorShower();
+void auroraWaves();
+void lavaFlow();
+
+// Pattern list and names
+typedef void (*SimplePatternList[])();
+SimplePatternList gPatterns = { 
+  rainbow, doChase, juggle, rainbowWithGlitter, confetti, bpm,
+  fire, lightningStorm, plasmaField, meteorShower, auroraWaves, lavaFlow
+};
+
+const char* patternNames[] = {
+  "Rainbow", "Chase", "Juggle", "Rainbow+Glitter", "Confetti", "BPM",
+  "Fire", "Lightning", "Plasma", "Meteors", "Aurora", "Lava"
+};
+
+#define ARRAY_SIZE(A) (sizeof(A) / sizeof((A)[0]))
+
+// ESP-NOW callbacks
 void onDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
-  // Called when data is sent via ESP-NOW
-  static unsigned long lastSendLog = 0;
-  if (status != ESP_NOW_SEND_SUCCESS) {
-    Serial.println("ESP-NOW send failed");
-  } else if (millis() - lastSendLog > 2000) {
-    Serial.println("ESP-NOW message sent successfully");
-    lastSendLog = millis();
+  if (status == ESP_NOW_SEND_SUCCESS) {
+    Serial.println("ESP-NOW: Send OK");
+  } else {
+    Serial.println("ESP-NOW: Send FAIL");
   }
 }
 
 void onDataReceived(const esp_now_recv_info* recv_info, const uint8_t *incomingData, int len) {
-  // Only process LED data if we're in follower mode (Normal or Music, not Leader)
+  Serial.print("ESP-NOW: Received ");
+  Serial.print(len);
+  Serial.println(" bytes");
+  
+  // Only process if we're a follower (not a leader)
   if (currentMode == MODE_NORMAL_LEADER || currentMode == MODE_MUSIC_LEADER) {
-    return; // Ignore if we're a leader ourselves
+    Serial.println("ESP-NOW: Ignoring (I'm a leader)");
+    return;
   }
   
   // Verify message size
   if (len != sizeof(LEDSync)) {
-    return; // Wrong message size
+    Serial.print("ESP-NOW: Wrong size, expected ");
+    Serial.println(sizeof(LEDSync));
+    return;
   }
   
   LEDSync receivedData;
   memcpy(&receivedData, incomingData, sizeof(receivedData));
   
-  // Update last message time - we're receiving from a leader
+  // Update leader activity
   lastLeaderMessage = millis();
   leaderDataActive = true;
   
-  // Apply LED data directly to our strip
-  for (int i = 0; i < receivedData.count && i < 50; i++) {
+  // Apply brightness from leader (for audio sync)
+  FastLED.setBrightness(receivedData.brightness);
+  
+  // Apply LED data directly
+  for (int i = 0; i < receivedData.count && i < 49; i++) {
     int ledIndex = receivedData.startIndex + i;
     if (ledIndex < NUM_LEDS) {
       int dataIndex = i * 3;
@@ -267,89 +175,42 @@ void onDataReceived(const esp_now_recv_info* recv_info, const uint8_t *incomingD
     }
   }
   
-  // If this is the last packet (startIndex + count >= NUM_LEDS), show the LEDs
+  // Show LEDs when we receive the last packet
   if (receivedData.startIndex + receivedData.count >= NUM_LEDS) {
     FastLED.show();
   }
 }
 
+// ESP-NOW setup
 void setupESPNOW() {
-  // Set device as a Wi-Fi Station and disconnect from any AP
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
-  
-  // Force specific WiFi channel for ESP-NOW compatibility
   esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
   
-  // Non-blocking delay replacement
-  unsigned long wifiSetupStart = millis();
-  while (millis() - wifiSetupStart < 100) {
-    yield(); // Allow other tasks
-  }
-  
-  // Print MAC address and channel for debugging
-  Serial.print("MAC Address: ");
-  Serial.println(WiFi.macAddress());
-  wifi_second_chan_t secondChan;
-  uint8_t channel;
-  esp_wifi_get_channel(&channel, &secondChan);
-  Serial.print("WiFi Channel: ");
-  Serial.println(channel);
-  
-  // Initialize ESP-NOW
-  esp_err_t initResult = esp_now_init();
-  if (initResult != ESP_OK) {
-    Serial.print("Error initializing ESP-NOW: ");
-    Serial.println(initResult);
-    Serial.println("Continuing without ESP-NOW...");
+  if (esp_now_init() != ESP_OK) {
+    Serial.println("ESP-NOW init failed");
     return;
   }
   
-  // Register callbacks
-  esp_err_t sendResult = esp_now_register_send_cb(onDataSent);
-  esp_err_t recvResult = esp_now_register_recv_cb(onDataReceived);
+  esp_now_register_send_cb(onDataSent);
+  esp_now_register_recv_cb(onDataReceived);
   
-  if (sendResult != ESP_OK) {
-    Serial.print("Send callback registration failed: ");
-    Serial.println(sendResult);
-  }
-  
-  if (recvResult != ESP_OK) {
-    Serial.print("Receive callback registration failed: ");
-    Serial.println(recvResult);
-  }
-  
-  // Add broadcast peer with better error handling
   esp_now_peer_info_t peerInfo = {};
   memcpy(peerInfo.peer_addr, broadcastAddress, 6);
-  peerInfo.channel = 1; // Match the WiFi channel we set
+  peerInfo.channel = 1;
   peerInfo.encrypt = false;
   peerInfo.ifidx = WIFI_IF_STA;
   
-  esp_err_t addPeerResult = esp_now_add_peer(&peerInfo);
-  if (addPeerResult != ESP_OK) {
-    Serial.print("Failed to add broadcast peer: ");
-    Serial.println(addPeerResult);
-    
-    // Try to remove existing peer first, then re-add
-    esp_now_del_peer(broadcastAddress);
-    addPeerResult = esp_now_add_peer(&peerInfo);
-    if (addPeerResult == ESP_OK) {
-      Serial.println("Broadcast peer added after removal");
-    } else {
-      Serial.print("Still failed after removal: ");
-      Serial.println(addPeerResult);
-    }
+  if (esp_now_add_peer(&peerInfo) != ESP_OK) {
+    Serial.println("ESP-NOW peer add failed");
   } else {
-    Serial.println("Broadcast peer added successfully");
+    Serial.println("ESP-NOW setup complete");
   }
-  
-  Serial.println("ESP-NOW setup completed");
 }
 
-// Broadcast LED data in chunks for leader modes
+// Broadcast LED data (for leader modes)
 void broadcastLEDData() {
-  const int LEDS_PER_PACKET = 50;  // 50 LEDs = 150 bytes RGB data
+  const int LEDS_PER_PACKET = 49;  // Reduced by 1 to fit brightness byte
   static uint8_t sequenceNum = 0;
   
   LEDSync message;
@@ -358,6 +219,7 @@ void broadcastLEDData() {
   for (int startIdx = 0; startIdx < NUM_LEDS; startIdx += LEDS_PER_PACKET) {
     message.startIndex = startIdx;
     message.count = min(LEDS_PER_PACKET, NUM_LEDS - startIdx);
+    message.brightness = FastLED.getBrightness();  // Include current brightness
     
     // Pack RGB data
     for (int i = 0; i < message.count; i++) {
@@ -368,422 +230,16 @@ void broadcastLEDData() {
       message.rgbData[dataIdx + 2] = leds[ledIdx].b;
     }
     
-    // Send packet
-    esp_err_t result = esp_now_send(broadcastAddress, (uint8_t*)&message, sizeof(message));
-    if (result != ESP_OK) {
-      static unsigned long lastErrorLog = 0;
-      if (millis() - lastErrorLog > 1000) {
-        Serial.print("ESP-NOW send error: ");
-        Serial.println(result);
-        lastErrorLog = millis();
-      }
-    }
+    esp_now_send(broadcastAddress, (uint8_t*)&message, sizeof(message));
   }
 }
 
-// Button interrupt handler
-void IRAM_ATTR buttonInterrupt() {
-  unsigned long currentTime = millis();
-  // Debounce the interrupt (ignore if within 50ms of last interrupt)
-  if (currentTime - buttonLastInterrupt > 50) {
-    buttonCurrentState = digitalRead(37); // M5StickC Plus 2 button A pin
-    buttonStateChanged = true;
-    buttonLastInterrupt = currentTime;
-  }
-}
-
-void setupButtonInterrupt() {
-  // Configure button pin for interrupt
-  pinMode(37, INPUT_PULLUP); // M5StickC Plus 2 button A
-  attachInterrupt(digitalPinToInterrupt(37), buttonInterrupt, CHANGE);
-  Serial.println("Button interrupt setup completed");
-}
-
-void setup() {
-  // Initialize M5StickC Plus 2
-  auto cfg = M5.config();
-  M5.begin(cfg);
-  M5.Display.setRotation(1);
-  M5.Display.fillScreen(BLACK);
-  M5.Display.setTextColor(WHITE);
-  M5.Display.setTextSize(1);
-  updateDisplay();
-  
-  Serial.begin(115200);
-  // Non-blocking initialization wait
-  unsigned long serialStart = millis();
-  while (millis() - serialStart < 1000) {
-    yield(); // Allow other processes
-  }
-
-  // Setup interrupt-based button handling
-  setupButtonInterrupt();
-  
-  // Initialize audio system
-  initAudio();
-  
-  // Initialize ESP-NOW
-  setupESPNOW();
-
-  // tell FastLED about the LED strip configuration
-  FastLED.addLeds<LED_TYPE, DATA_PIN, COLOR_ORDER>(leds, NUM_LEDS).setCorrection(TypicalLEDStrip);
-  //FastLED.addLeds<LED_TYPE,DATA_PIN,CLK_PIN,COLOR_ORDER>(leds, NUM_LEDS).setCorrection(TypicalLEDStrip);
-
-  // set master brightness control
-  FastLED.setBrightness(BRIGHTNESS);
-  FastLED.clear();
-  FastLED.show();
-  Serial.println("M5 Lights v" + String(VERSION) + " - Normal Mode Ready");
-}
-
-
-// List of patterns to cycle through.  Each is defined as a separate function below.
-typedef void (*SimplePatternList[])();
-//SimplePatternList gPatterns = { rainbow, rainbowWithGlitter, confetti, sinelon, juggle, bpm };
-SimplePatternList gPatterns = { 
-  rainbow, doChase, juggle, rainbowWithGlitter, confetti, bpm,
-  fire, lightningStorm, plasmaField, meteorShower, auroraWaves, lavaFlow
-};
-
-// Pattern names for display
-const char* patternNames[] = {
-  "Rainbow", "Chase", "Juggle", "Rainbow+Glitter", "Confetti", "BPM",
-  "Fire", "Lightning", "Plasma", "Meteors", "Aurora", "Lava"
-};
-
-// Moved to top for ESP-NOW callback access
-
-void loop() {
-  M5.update();
-  
-  // Handle interrupt-based button logic for mode switching
-  handleButtonLogic();
-  
-  // Handle mode-specific behavior
-  handleCurrentMode();
-  
-  // Update the display if needed (non-blocking)
-  if (millis() - lastDisplayUpdate > 1000) {
-    updateDisplay();
-    lastDisplayUpdate = millis();
-  }
-  
-  // Small yield to allow other processes
-  yield();
-}
-
-#define ARRAY_SIZE(A) (sizeof(A) / sizeof((A)[0]))
-
-// Ultra-simple mode switching functions
-void switchToNormalMode() {
-  if (currentMode != MODE_NORMAL) {
-    currentMode = MODE_NORMAL;
-    lastModeSwitch = millis();
-    leaderDataActive = false;
-    Serial.println("*** SWITCHED TO NORMAL MODE ***");
-    updateDisplay();
-  }
-}
-
-void switchToMusicMode() {
-  if (currentMode != MODE_MUSIC) {
-    currentMode = MODE_MUSIC;
-    lastModeSwitch = millis();
-    leaderDataActive = false;
-    Serial.println("*** SWITCHED TO MUSIC MODE ***");
-    updateDisplay();
-  }
-}
-
-void switchToNormalLeaderMode() {
-  if (currentMode != MODE_NORMAL_LEADER) {
-    currentMode = MODE_NORMAL_LEADER;
-    lastModeSwitch = millis();
-    leaderDataActive = false;
-    Serial.println("*** SWITCHED TO NORMAL LEADER MODE ***");
-    updateDisplay();
-  }
-}
-
-void switchToMusicLeaderMode() {
-  if (currentMode != MODE_MUSIC_LEADER) {
-    currentMode = MODE_MUSIC_LEADER;
-    lastModeSwitch = millis();
-    leaderDataActive = false;
-    Serial.println("*** SWITCHED TO MUSIC LEADER MODE ***");
-    updateDisplay();
-  }
-}
-
-void updateDisplay() {
-  // Set background color based on mode
-  uint16_t backgroundColor;
-  uint16_t textColor = WHITE;
-  
-  switch (currentMode) {
-    case MODE_NORMAL:
-      backgroundColor = GREEN;
-      textColor = BLACK;
-      break;
-    case MODE_MUSIC:
-      backgroundColor = PURPLE;
-      textColor = WHITE;
-      break;
-    case MODE_NORMAL_LEADER:
-      backgroundColor = ORANGE;
-      textColor = BLACK;
-      break;
-    case MODE_MUSIC_LEADER:
-      backgroundColor = RED;
-      textColor = WHITE;
-      break;
-    default:
-      backgroundColor = BLACK;
-      textColor = WHITE;
-      break;
-  }
-  
-  M5.Display.fillScreen(backgroundColor);
-  M5.Display.setTextColor(textColor);
-  M5.Display.setTextSize(1);
-  
-  // Title and version
-  M5.Display.drawString("FastLED Sync", 10, 10);
-  M5.Display.drawString("v" + String(VERSION), 10, 20);
-  
-  // Current mode with emphasis
-  String modeStr = "";
-  switch (currentMode) {
-    case MODE_NORMAL: modeStr = "NORMAL"; break;
-    case MODE_MUSIC: modeStr = "MUSIC"; break;
-    case MODE_NORMAL_LEADER: modeStr = "NORMAL LEADER"; break;
-    case MODE_MUSIC_LEADER: modeStr = "MUSIC LEADER"; break;
-  }
-  M5.Display.drawString("Mode: " + modeStr, 10, 35);
-  
-  // Pattern info based on mode
-  if (leaderDataActive && (currentMode == MODE_NORMAL || currentMode == MODE_MUSIC)) {
-    M5.Display.drawString("Following Leader...", 10, 50);
-  } else if (currentMode == MODE_MUSIC || currentMode == MODE_MUSIC_LEADER) {
-    // Show current pattern name in music modes
-    if (gCurrentPatternNumber < ARRAY_SIZE(patternNames)) {
-      String patternDisplay = String(gCurrentPatternNumber) + ": " + String(patternNames[gCurrentPatternNumber]);
-      M5.Display.drawString(patternDisplay, 10, 50);
-    } else {
-      M5.Display.drawString("Pattern: " + String(gCurrentPatternNumber), 10, 50);
-    }
-    M5.Display.drawString("Audio: " + String((int)(audioLevel * 100)) + "%", 10, 65);
-    M5.Display.drawString("Beat: " + String(beatDetected ? "YES" : "NO"), 10, 80);
-  } else {
-    // Normal modes - show pattern name
-    if (gCurrentPatternNumber < ARRAY_SIZE(patternNames)) {
-      String patternDisplay = String(gCurrentPatternNumber) + ": " + String(patternNames[gCurrentPatternNumber]);
-      M5.Display.drawString(patternDisplay, 10, 50);
-    } else {
-      M5.Display.drawString("Pattern: " + String(gCurrentPatternNumber), 10, 50);
-    }
-  }
-  
-  // Additional status
-  M5.Display.drawString("G32->LEDs", 10, 65);
-}
-
-void handleButtonLogic() {
-  // Simplified button state machine
-  static enum {
-    BTN_IDLE,
-    BTN_PRESSED,
-    BTN_LONG_TRIGGERED,
-    BTN_COOLDOWN
-  } buttonState = BTN_IDLE;
-  
-  static unsigned long buttonPressTime = 0;
-  static unsigned long lastAction = 0;
-  
-  unsigned long now = millis();
-  bool currentPressed = !digitalRead(37); // Read button directly (inverted due to pull-up)
-  
-  // Debounce check
-  if (now - lastAction < 50) {
-    return;
-  }
-  
-  switch (buttonState) {
-    case BTN_IDLE:
-      if (currentPressed) {
-        buttonState = BTN_PRESSED;
-        buttonPressTime = now;
-        Serial.println("=== Button pressed ===");
-        lastAction = now;
-      }
-      break;
-      
-    case BTN_PRESSED:
-      if (!currentPressed) {
-        // Button released - short press
-        unsigned long duration = now - buttonPressTime;
-        Serial.print("=== Short press (");
-        Serial.print(duration);
-        Serial.print("ms) ===");
-        
-        // Short press: Toggle Normal ↔ Music (no leader modes)
-        if (currentMode == MODE_NORMAL || currentMode == MODE_NORMAL_LEADER) {
-          switchToMusicMode();
-          Serial.println(" -> MUSIC mode");
-        } else if (currentMode == MODE_MUSIC || currentMode == MODE_MUSIC_LEADER) {
-          nextPattern();
-          switchToNormalMode();
-          Serial.print(" -> NORMAL mode, Pattern: ");
-          Serial.println(gCurrentPatternNumber);
-        }
-        updateDisplay();
-        
-        buttonState = BTN_COOLDOWN;
-        lastAction = now;
-        
-      } else if (now - buttonPressTime >= LONG_PRESS_TIME_MS) {
-        // Long press: Become leader of current mode
-        if (currentMode == MODE_NORMAL || currentMode == MODE_NORMAL_LEADER) {
-          Serial.println("=== Long press -> NORMAL LEADER mode ===");
-          switchToNormalLeaderMode();
-        } else if (currentMode == MODE_MUSIC || currentMode == MODE_MUSIC_LEADER) {
-          Serial.println("=== Long press -> MUSIC LEADER mode ===");
-          switchToMusicLeaderMode();
-        }
-        updateDisplay();
-        
-        buttonState = BTN_LONG_TRIGGERED;
-        lastAction = now;
-      }
-      break;
-      
-    case BTN_LONG_TRIGGERED:
-      if (!currentPressed) {
-        Serial.println("=== Long press released ===");
-        buttonState = BTN_COOLDOWN;
-        lastAction = now;
-      }
-      break;
-      
-    case BTN_COOLDOWN:
-      if (!currentPressed && now - lastAction > 300) {
-        buttonState = BTN_IDLE;
-        Serial.println("=== Button ready ===");
-      }
-      break;
-  }
-}
-
-void handleCurrentMode() {
-  unsigned long currentTime = millis();
-  
-  switch (currentMode) {
-    case MODE_NORMAL:
-      handleNormalMode(currentTime);
-      break;
-      
-    case MODE_LEAD:
-      handleLeadMode(currentTime);
-      break;
-      
-    case MODE_FOLLOW:
-      handleFollowMode(currentTime);
-      break;
-      
-    case MODE_MUSIC:
-      handleMusicMode(currentTime);
-      break;
-  }
-}
-
-void handleNormalMode(unsigned long currentTime) {
-  // Run patterns locally
-  runLocalPatterns();
-  
-  // Frequently check for leader (every 500ms now)
-  if (currentTime - lastLeaderCheck > LEADER_CHECK_INTERVAL_MS) {
-    lastLeaderCheck = currentTime;
-    // Reset leader detection flag to allow fresh detection
-    if (!leaderDetected) {
-      Serial.print("Normal mode: Checking for leader... Last msg: ");
-      Serial.print(currentTime - lastLeaderMessage);
-      Serial.println("ms ago");
-      
-      // Send a test heartbeat to verify ESP-NOW is working
-      static unsigned long lastTestBroadcast = 0;
-      if (currentTime - lastTestBroadcast > 5000) { // Every 5 seconds
-        Serial.println("Sending test heartbeat...");
-        broadcastHeartbeat();
-        lastTestBroadcast = currentTime;
-      }
-    }
-  }
-}
-
-void handleLeadMode(unsigned long currentTime) {
-  // Run patterns locally (non-blocking)
-  runLocalPatterns();
-  
-  // Broadcast pattern state frequently (using global timing variable)
-  if (currentTime - lastBroadcast > SYNC_SEND_INTERVAL_MS) {
-    broadcastPatternState();
-    lastBroadcast = currentTime;
-  }
-  
-  // Send periodic heartbeat to maintain connection (using global timing variable)
-  if (currentTime - lastHeartbeat > LEADER_HEARTBEAT_INTERVAL_MS) {
-    broadcastHeartbeat();
-    lastHeartbeat = currentTime;
-  }
-}
-
-void handleFollowMode(unsigned long currentTime) {
-  // Check for leader timeout
-  if (currentTime - lastLeaderMessage > LEADER_TIMEOUT_MS) {
-    Serial.println("Leader timeout - switching to normal mode");
-    switchToNormalMode();
-    leaderDetected = false;
-    patternSyncActive = false;
-    return;
-  }
-  
-  // NEW: In follow mode, run the SAME patterns as leader with synchronized timing
-  if (patternSyncActive) {
-    runSynchronizedPatterns();
-  } else {
-    // Fallback to showing something while waiting for sync
-    static unsigned long lastFallbackUpdate = 0;
-    if (currentTime - lastFallbackUpdate > 100) {
-      fill_solid(leds, NUM_LEDS, CRGB::Blue); // Blue while waiting for sync
-      FastLED.show();
-      lastFallbackUpdate = currentTime;
-    }
-  }
-}
-
-void handleMusicMode(unsigned long currentTime) {
-  // Note: ESP-NOW stays active to avoid crash issues
-  // Just run patterns without network sync in music mode
-  
-  // Sample microphone and update audio level
-  updateAudioLevel();
-  
-  // Run patterns with music-reactive brightness
-  runMusicReactivePatterns();
-  
-  // Update display periodically
-  static unsigned long lastDisplayUpdate = 0;
-  if (currentTime - lastDisplayUpdate > 200) { // Update every 200ms
-    updateDisplay();
-    lastDisplayUpdate = currentTime;
-  }
-}
-
+// Audio system (working implementation from v2.6)
 void initAudio() {
   M5.Mic.begin(); 
   M5.Mic.setSampleRate(MIC_SR);
   lastBpmMillis = millis();
-  Serial.println("Audio initialized with M5.Mic");
+  Serial.println("Audio initialized");
 }
 
 void detectAudioFrame() {
@@ -797,7 +253,7 @@ void detectAudioFrame() {
   soundMin = min(raw, SMOOTH * soundMin + (1 - SMOOTH) * raw);
   soundMax = max(raw, SMOOTH * soundMax + (1 - SMOOTH) * raw);
   
-  // Adaptive sensitivity for high volume environments
+  // Adaptive sensitivity
   float dynamicRange = soundMax - soundMin;
   const float MIN_DYNAMIC_RANGE = 0.08f;
   const float HIGH_VOLUME_THRESHOLD = 0.7f;
@@ -806,7 +262,6 @@ void detectAudioFrame() {
   float adaptedMax = soundMax;
   float beatThreshold = 0.6f;
   
-  // Detect high volume saturation scenario
   bool highVolumeEnvironment = (soundMin > HIGH_VOLUME_THRESHOLD) || (dynamicRange < MIN_DYNAMIC_RANGE);
   
   if (highVolumeEnvironment) {
@@ -819,7 +274,7 @@ void detectAudioFrame() {
   }
   
   musicLevel = constrain((raw - adaptedMin) / (adaptedMax - adaptedMin + 1e-6f), 0.0f, 1.0f);
-  audioLevel = musicLevel; // For compatibility with existing code
+  audioLevel = musicLevel;
   
   bool above = (musicLevel > beatThreshold);
   if (above && !prevAbove) {
@@ -854,268 +309,349 @@ void updateBPM() {
 }
 
 void updateAudioLevel() {
-  // Call the working audio detection functions
   detectAudioFrame();
   updateBPM();
   
-  // Calculate music-reactive brightness with maximum contrast
-  // From almost off (2) to full brightness (96) for dramatic effect
-  uint8_t minBrightness = 2;   // Almost off but still visible
-  uint8_t maxBrightness = 96;  // Full brightness for maximum contrast
+  // Adaptive noise floor and peak tracking
+  if (audioLevel < noiseFloor || noiseFloor == 0.01f) {
+    noiseFloor = noiseFloor * noiseFloorSmooth + audioLevel * (1.0f - noiseFloorSmooth);
+  }
   
-  musicBrightness = minBrightness + (uint8_t)(audioLevel * (maxBrightness - minBrightness));
+  if (audioLevel > peakLevel) {
+    peakLevel = peakLevel * peakLevelSmooth + audioLevel * (1.0f - peakLevelSmooth);
+  }
   
-  // Apply the brightness to FastLED
+  // Ensure we have a reasonable dynamic range
+  float dynamicRange = peakLevel - noiseFloor;
+  if (dynamicRange < 0.02f) {
+    dynamicRange = 0.02f;  // Minimum range to prevent division by zero
+  }
+  
+  // Map audio level from [noiseFloor, peakLevel] to [1, 96] brightness
+  float normalizedLevel = (audioLevel - noiseFloor) / dynamicRange;
+  normalizedLevel = constrain(normalizedLevel, 0.0f, 1.0f);
+  
+  // Full contrast: 1 (barely on) to 96 (full brightness)
+  uint8_t minBrightness = 1;
+  uint8_t maxBrightness = 96;
+  
+  musicBrightness = minBrightness + (uint8_t)(normalizedLevel * (maxBrightness - minBrightness));
   FastLED.setBrightness(musicBrightness);
-  
-  // Debug output (rate limited)
-  static unsigned long lastAudioDebug = 0;
-  if (millis() - lastAudioDebug > 1000 && Serial) { // Every 1000ms
-    lastAudioDebug = millis();
-    Serial.printf("Audio: level=%.3f, beats=%d, brightness=%d\n", 
-      audioLevel, beatCount, musicBrightness);
+}
+
+// Button interrupt handler
+void IRAM_ATTR buttonInterrupt() {
+  unsigned long currentTime = millis();
+  if (currentTime - buttonLastInterrupt > 50) {
+    buttonCurrentState = digitalRead(37);
+    buttonStateChanged = true;
+    buttonLastInterrupt = currentTime;
   }
 }
 
-void runMusicReactivePatterns() {
-  unsigned long currentTime = millis();
+void setupButtonInterrupt() {
+  pinMode(37, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(37), buttonInterrupt, CHANGE);
+}
+
+// Mode switching functions
+void switchToNormalMode() {
+  currentMode = MODE_NORMAL;
+  lastModeSwitch = millis();
+  leaderDataActive = false;
+  Serial.println("*** NORMAL MODE ***");
+}
+
+void switchToMusicMode() {
+  currentMode = MODE_MUSIC;
+  lastModeSwitch = millis();
+  leaderDataActive = false;
+  Serial.println("*** MUSIC MODE ***");
+}
+
+void switchToNormalLeaderMode() {
+  currentMode = MODE_NORMAL_LEADER;
+  lastModeSwitch = millis();
+  leaderDataActive = false;
+  Serial.println("*** NORMAL LEADER MODE ***");
+}
+
+void switchToMusicLeaderMode() {
+  currentMode = MODE_MUSIC_LEADER;
+  lastModeSwitch = millis();
+  leaderDataActive = false;
+  Serial.println("*** MUSIC LEADER MODE ***");
+}
+
+// Button handling
+void handleButtons() {
+  static enum { BTN_IDLE, BTN_PRESSED, BTN_LONG_TRIGGERED, BTN_COOLDOWN } buttonState = BTN_IDLE;
+  static unsigned long buttonPressTime = 0;
+  static unsigned long lastAction = 0;
   
-  // Non-blocking frame rate limiting
-  if (currentTime - lastPatternUpdate < 20) {
-    return; // Too soon for next frame (50 FPS)
+  unsigned long now = millis();
+  bool currentPressed = !digitalRead(37);
+  
+  if (now - lastAction < 50) return;
+  
+  switch (buttonState) {
+    case BTN_IDLE:
+      if (currentPressed) {
+        buttonState = BTN_PRESSED;
+        buttonPressTime = now;
+        lastAction = now;
+      }
+      break;
+      
+    case BTN_PRESSED:
+      if (!currentPressed) {
+        // Short press: Toggle Normal ↔ Music (preserve leader state)
+        Serial.print("Short press from mode: ");
+        Serial.println(currentMode);
+        if (currentMode == MODE_NORMAL) {
+          Serial.println("Switching NORMAL -> MUSIC");
+          switchToMusicMode();
+        } else if (currentMode == MODE_MUSIC) {
+          Serial.println("Switching MUSIC -> NORMAL");
+          switchToNormalMode();
+        } else if (currentMode == MODE_NORMAL_LEADER) {
+          Serial.println("Switching NORMAL_LEADER -> MUSIC_LEADER");
+          switchToMusicLeaderMode();
+        } else if (currentMode == MODE_MUSIC_LEADER) {
+          Serial.println("Switching MUSIC_LEADER -> NORMAL_LEADER");
+          switchToNormalLeaderMode();
+        }
+        buttonState = BTN_COOLDOWN;
+        lastAction = now;
+        
+      } else if (now - buttonPressTime >= LONG_PRESS_TIME_MS) {
+        // Long press: Toggle leader status of current mode
+        Serial.print("Long press from mode: ");
+        Serial.println(currentMode);
+        if (currentMode == MODE_NORMAL) {
+          Serial.println("Switching NORMAL -> NORMAL_LEADER");
+          switchToNormalLeaderMode();
+        } else if (currentMode == MODE_MUSIC) {
+          Serial.println("Switching MUSIC -> MUSIC_LEADER");
+          switchToMusicLeaderMode();
+        } else if (currentMode == MODE_NORMAL_LEADER) {
+          Serial.println("Switching NORMAL_LEADER -> NORMAL");
+          switchToNormalMode();
+        } else if (currentMode == MODE_MUSIC_LEADER) {
+          Serial.println("Switching MUSIC_LEADER -> MUSIC");
+          switchToMusicMode();
+        }
+        buttonState = BTN_LONG_TRIGGERED;
+        lastAction = now;
+      }
+      break;
+      
+    case BTN_LONG_TRIGGERED:
+      if (!currentPressed) {
+        buttonState = BTN_COOLDOWN;
+        lastAction = now;
+      }
+      break;
+      
+    case BTN_COOLDOWN:
+      if (!currentPressed && now - lastAction > 300) {
+        buttonState = BTN_IDLE;
+      }
+      break;
   }
-  lastPatternUpdate = currentTime;
+}
+
+// Display update
+void updateDisplay() {
+  uint16_t backgroundColor;
+  uint16_t textColor = WHITE;
   
-  // Run the current pattern with music-reactive modifications
-  if (gCurrentPatternNumber < ARRAY_SIZE(gPatterns)) {
-    gPatterns[gCurrentPatternNumber]();
-  }
-  
-  // Apply beat-responsive effects
-  if (beatDetected) {
-    // Flash effect on beat - temporarily boost brightness
-    for (int i = 0; i < NUM_LEDS; i++) {
-      leds[i].fadeLightBy(50); // Brighten by reducing fade
+  // Check if we're following (receiving leader data)
+  if (leaderDataActive && (currentMode == MODE_NORMAL || currentMode == MODE_MUSIC)) {
+    backgroundColor = BLUE;  // Blue background when following
+    textColor = WHITE;
+  } else {
+    switch (currentMode) {
+      case MODE_NORMAL:
+        backgroundColor = GREEN;
+        textColor = BLACK;
+        break;
+      case MODE_MUSIC:
+        backgroundColor = PURPLE;
+        textColor = WHITE;
+        break;
+      case MODE_NORMAL_LEADER:
+        backgroundColor = ORANGE;
+        textColor = BLACK;
+        break;
+      case MODE_MUSIC_LEADER:
+        backgroundColor = RED;
+        textColor = WHITE;
+        break;
+      default:
+        backgroundColor = BLACK;
+        break;
     }
   }
   
-  // Send the music-reactive pattern to LED strip
-  FastLED.show();
+  M5.Display.fillScreen(backgroundColor);
+  M5.Display.setTextColor(textColor);
+  M5.Display.setTextSize(1);
   
-  // Auto-change patterns on strong beats (optional)
-  static unsigned long lastAutoChange = 0;
-  if (beatDetected && audioLevel > 0.7 && (currentTime - lastAutoChange > 10000)) {
-    nextPattern();
-    lastAutoChange = currentTime;
+  M5.Display.drawString("Simple Sync", 10, 10);
+  M5.Display.drawString("v" + String(VERSION), 10, 20);
+  
+  String modeStr = "";
+  switch (currentMode) {
+    case MODE_NORMAL: modeStr = "NORMAL"; break;
+    case MODE_MUSIC: modeStr = "MUSIC"; break;
+    case MODE_NORMAL_LEADER: modeStr = "NORM LEAD"; break;
+    case MODE_MUSIC_LEADER: modeStr = "MUSIC LEAD"; break;
   }
+  M5.Display.drawString("Mode: " + modeStr, 10, 35);
   
-  // Update hue based on audio level for color shifts
-  gHue = (uint8_t)(audioLevel * 255);
-}
-
-void runLocalPatterns() {
-  unsigned long currentTime = millis();
-  
-  // Non-blocking frame rate limiting - faster for real-time sync
-  if (currentTime - lastPatternUpdate < 20) {
-    return; // Too soon for next frame (50 FPS)
+  // Pattern info
+  if (leaderDataActive && (currentMode == MODE_NORMAL || currentMode == MODE_MUSIC)) {
+    M5.Display.drawString("Following...", 10, 50);
+  } else if (currentMode == MODE_MUSIC || currentMode == MODE_MUSIC_LEADER) {
+    String patternDisplay = String(gCurrentPatternNumber) + ": " + String(patternNames[gCurrentPatternNumber]);
+    M5.Display.drawString(patternDisplay, 10, 50);
+    M5.Display.drawString("Audio: " + String((int)(audioLevel * 100)) + "%", 10, 65);
+    M5.Display.drawString("Beat: " + String(beatDetected ? "YES" : "NO"), 10, 80);
+  } else {
+    String patternDisplay = String(gCurrentPatternNumber) + ": " + String(patternNames[gCurrentPatternNumber]);
+    M5.Display.drawString(patternDisplay, 10, 50);
   }
-  lastPatternUpdate = currentTime;
-  
-  // Call the current pattern function once, updating the 'leds' array
-  gPatterns[gCurrentPatternNumber]();
-
-  // send the 'leds' array out to the actual LED strip
-  FastLED.show();
-
-  // do some periodic updates (non-blocking)
-  static unsigned long lastHueUpdate = 0;
-  if (currentTime - lastHueUpdate > 20) {
-    gHue++;
-    lastHueUpdate = currentTime;
-  }
-  
-  static unsigned long lastPatternChange = 0;
-  if (currentTime - lastPatternChange > 5000) { // 5 seconds
-    nextPattern();
-    lastPatternChange = currentTime;
-  }
-}
-
-void broadcastPatternState() {
-  // NEW: Broadcast pattern synchronization state (single tiny message!)
-  static uint16_t frameCounter = 0;
-  static unsigned long patternStartTime = millis();
-  static uint8_t lastPattern = 255; // Invalid pattern to force reset
-  
-  // Reset timing when pattern changes
-  if (gCurrentPatternNumber != lastPattern) {
-    patternStartTime = millis();
-    frameCounter = 0;
-    lastPattern = gCurrentPatternNumber;
-    Serial.print("Broadcasting new pattern: ");
-    Serial.println(gCurrentPatternNumber);
-  }
-  
-  PatternSyncMessage message;
-  message.messageType = 0x01; // Pattern state
-  message.patternNumber = gCurrentPatternNumber;
-  message.patternStartTime = patternStartTime;
-  message.currentTime = millis();
-  message.globalHue = gHue;
-  message.randomSeed = frameCounter * 12345 + gCurrentPatternNumber; // Predictable but varied seed
-  message.frameNumber = frameCounter++;
-  
-  // Clear reserved bytes
-  memset(message.reserved, 0, sizeof(message.reserved));
-  
-  // Calculate checksum over all bytes except checksum field
-  message.checksum = 0;
-  uint8_t* data = (uint8_t*)&message;
-  for (int i = 0; i < sizeof(PatternSyncMessage) - 1; i++) {
-    message.checksum ^= data[i];
-  }
-  
-  // Send single message - only ~30 bytes!
-  esp_err_t result = esp_now_send(broadcastAddress, (uint8_t*)&message, sizeof(message));
-  
-  static unsigned long lastLog = 0;
-  if (millis() - lastLog > 100) { // Send updates every 100ms for real-time sync
-    Serial.print("Leading pattern ");
-    Serial.print(gCurrentPatternNumber);
-    Serial.print(", frame ");
-    Serial.print(frameCounter);
-    Serial.print(", send result: ");
-    Serial.print(result == ESP_OK ? "OK" : "FAIL");
-    Serial.print(", msg size: ");
-    Serial.println(sizeof(message));
-    lastLog = millis();
-  }
-}
-
-void broadcastHeartbeat() {
-  // Send a simple heartbeat message to maintain connection
-  PatternSyncMessage heartbeat;
-  heartbeat.messageType = 0x02; // Heartbeat
-  heartbeat.patternNumber = gCurrentPatternNumber;
-  heartbeat.patternStartTime = 0;
-  heartbeat.currentTime = millis();
-  heartbeat.globalHue = gHue;
-  heartbeat.randomSeed = 0;
-  heartbeat.frameNumber = 0;
-  memset(heartbeat.reserved, 0, sizeof(heartbeat.reserved));
-  
-  // Calculate checksum over all bytes except checksum field
-  heartbeat.checksum = 0;
-  uint8_t* data = (uint8_t*)&heartbeat;
-  for (int i = 0; i < sizeof(PatternSyncMessage) - 1; i++) {
-    heartbeat.checksum ^= data[i];
-  }
-  
-  // Send heartbeat
-  esp_now_send(broadcastAddress, (uint8_t*)&heartbeat, sizeof(heartbeat));
-}
-
-void applySyncedPatternState(const PatternSyncMessage& syncMsg) {
-  // NEW: Apply synchronized pattern state from leader
-  // Calculate time offset for synchronization
-  unsigned long now = millis();
-  timeOffset = now - syncMsg.currentTime;
-  
-  // Switch pattern if needed
-  if (gCurrentPatternNumber != syncMsg.patternNumber) {
-    gCurrentPatternNumber = syncMsg.patternNumber;
-    Serial.print("Switched to leader's pattern: ");
-    Serial.println(gCurrentPatternNumber);
-  }
-  
-  // Synchronize timing and state
-  leaderPatternStartTime = syncMsg.patternStartTime;
-  gHue = syncMsg.globalHue;
-  
-  // Synchronize random seed for patterns that use randomness
-  if (syncMsg.randomSeed != 0) {
-    syncedRandomSeed = syncMsg.randomSeed;
-    randomSeed(syncedRandomSeed);
-  }
-  
-  lastFrameNumber = syncMsg.frameNumber;
-  patternSyncActive = true;
-}
-
-void runSynchronizedPatterns() {
-  // NEW: Run patterns synchronized with leader timing
-  unsigned long currentTime = millis();
-  
-  // Non-blocking frame rate limiting - faster for real-time sync
-  if (currentTime - lastPatternUpdate < 20) {
-    return; // Too soon for next frame (50 FPS)
-  }
-  lastPatternUpdate = currentTime;
-  
-  // Run the EXACT same pattern as leader with NO local pattern switching
-  if (gCurrentPatternNumber < ARRAY_SIZE(gPatterns)) {
-    gPatterns[gCurrentPatternNumber]();
-  }
-
-  // Send the synchronized pattern to LED strip
-  FastLED.show();
-  
-  // gHue is already synchronized from leader, no need to update locally
-  // Pattern number changes ONLY come from leader messages
 }
 
 void nextPattern() {
-
-  // add one to the current pattern number, and wrap around at the end
   gCurrentPatternNumber = (gCurrentPatternNumber + 1) % ARRAY_SIZE(gPatterns);
-  Serial.print("Next pattern:");
-  Serial.println(gCurrentPatternNumber);
 }
 
+// Check for leader timeout
+void checkLeaderTimeout() {
+  if (leaderDataActive && (millis() - lastLeaderMessage > LEADER_TIMEOUT_MS)) {
+    leaderDataActive = false;
+    Serial.println("Leader timeout");
+  }
+}
+
+void setup() {
+  // Initialize M5StickC Plus 2
+  auto cfg = M5.config();
+  M5.begin(cfg);
+  M5.Display.setRotation(1);
+  M5.Display.fillScreen(BLACK);
+  M5.Display.setTextColor(WHITE);
+  M5.Display.setTextSize(1);
+  
+  Serial.begin(115200);
+  delay(1000);
+  
+  setupButtonInterrupt();
+  initAudio();
+  setupESPNOW();
+  
+  // Initialize FastLED
+  FastLED.addLeds<CHIPSET, LED_PIN, COLOR_ORDER>(leds, NUM_LEDS).setCorrection(TypicalLEDStrip);
+  FastLED.setBrightness(BRIGHTNESS);
+  
+  randomSeed(micros());
+  fill_solid(leds, NUM_LEDS, CRGB::Black);
+  FastLED.show();
+  
+  updateDisplay();
+  
+  Serial.println("Simple LED Sync v" + String(VERSION) + " ready!");
+  Serial.println("Short press: Normal ↔ Music");
+  Serial.println("Long press: Become Leader");
+}
+
+void loop() {
+  M5.update();
+  handleButtons();
+  
+  unsigned long currentTime = millis();
+  
+  // Check for leader timeout
+  checkLeaderTimeout();
+  
+  // If we're following a leader, don't run our own patterns
+  if (leaderDataActive && (currentMode == MODE_NORMAL || currentMode == MODE_MUSIC)) {
+    // Just update display and return - LEDs controlled by leader
+    if (currentTime - lastDisplayUpdate > 200) {
+      updateDisplay();
+      lastDisplayUpdate = currentTime;
+    }
+    return;
+  }
+  
+  // Run patterns based on mode
+  if (currentMode == MODE_MUSIC || currentMode == MODE_MUSIC_LEADER) {
+    // Music mode - update audio and run pattern
+    updateAudioLevel();
+    gPatterns[gCurrentPatternNumber]();
+    FastLED.show();
+  } else {
+    // Normal mode - just run pattern
+    FastLED.setBrightness(BRIGHTNESS);
+    gPatterns[gCurrentPatternNumber]();
+    FastLED.show();
+  }
+  
+  // Broadcast LED data if we're a leader
+  if ((currentMode == MODE_NORMAL_LEADER || currentMode == MODE_MUSIC_LEADER) && 
+      (currentTime - lastBroadcast > BROADCAST_INTERVAL_MS)) {
+    broadcastLEDData();
+    lastBroadcast = currentTime;
+  }
+  
+  // Update display periodically
+  if (currentTime - lastDisplayUpdate > 200) {
+    updateDisplay();
+    lastDisplayUpdate = currentTime;
+  }
+  
+  // Auto-advance patterns every 15 seconds in all modes
+  static unsigned long lastPatternChange = 0;
+  if (currentTime - lastPatternChange > 15000) {
+    nextPattern();
+    lastPatternChange = currentTime;
+  }
+  
+  // Increment hue for patterns
+  EVERY_N_MILLISECONDS(20) { gHue++; }
+  
+  yield();
+}
+
+// ===== PATTERN IMPLEMENTATIONS =====
+// All 12 patterns from v2.6
+
 void rainbow() {
-  // FastLED's built-in rainbow generator
   fill_rainbow(leds, NUM_LEDS, gHue, 7);
 }
 
 void rainbowWithGlitter() {
-  // built-in FastLED rainbow, plus some random sparkly glitter
   rainbow();
-  addGlitter(80);
-}
-
-void addGlitter(fract8 chanceOfGlitter) {
-  if (random8() < chanceOfGlitter) {
+  if (random8() < 80) {
     leds[random16(NUM_LEDS)] += CRGB::White;
   }
 }
 
 void confetti() {
-  // random colored speckles that blink in and fade smoothly
   fadeToBlackBy(leds, NUM_LEDS, 10);
   int pos = random16(NUM_LEDS);
   leds[pos] += CHSV(gHue + random8(64), 200, 255);
 }
 
 void sinelon() {
-  // a colored dot sweeping back and forth, with fading trails
   fadeToBlackBy(leds, NUM_LEDS, 20);
   int pos = beatsin16(13, 0, NUM_LEDS - 1);
   leds[pos] += CHSV(gHue, 255, 192);
 }
 
-void bpm() {
-  // colored stripes pulsing at a defined Beats-Per-Minute (BPM)
-  uint8_t BeatsPerMinute = 62;
-  CRGBPalette16 palette = PartyColors_p;
-  uint8_t beat = beatsin8(BeatsPerMinute, 64, 255);
-  for (int i = 0; i < NUM_LEDS; i++) {  //9948
-    leds[i] = ColorFromPalette(palette, gHue + (i * 2), beat - gHue + (i * 10));
-  }
-}
-
 void juggle() {
-  // eight colored dots, weaving in and out of sync with each other
   fadeToBlackBy(leds, NUM_LEDS, 20);
   uint8_t dothue = 0;
   for (int i = 0; i < 8; i++) {
@@ -1124,90 +660,100 @@ void juggle() {
   }
 }
 
-// NEW PATTERNS ADDED FROM OLDPLAYALIGHTS 🔥
+void bpm() {
+  uint8_t BeatsPerMinute = 62;
+  CRGBPalette16 palette = PartyColors_p;
+  uint8_t beat = beatsin8(BeatsPerMinute, 64, 255);
+  for (int i = 0; i < NUM_LEDS; i++) {
+    leds[i] = ColorFromPalette(palette, gHue + (i * 2), beat - gHue + (i * 10));
+  }
+}
+
+void doChase() {
+  static uint32_t last = 0;
+  static uint16_t pos = 0;
+  static uint8_t hue = 0;
+  uint32_t now = millis();
+  if (now - last < 100) return;
+  last = now;
+  pos = (pos + 1) % NUM_LEDS;
+  fadeToBlackBy(leds, NUM_LEDS, 50);
+  for (int i = 0; i < NUM_LEDS; i += 20) {
+    for (int t = 0; t < 10; t++) {
+      int idx = (pos + i + NUM_LEDS - t) % NUM_LEDS;
+      leds[idx] |= CHSV(hue + i, 255, map(t, 0, 9, 255, 50));
+    }
+  }
+  hue++;
+}
 
 void fire() {
-  // Realistic fire simulation using heat array
   static uint8_t heat[NUM_LEDS/2];
   int half = NUM_LEDS/2;
-  uint8_t cooling = 55;  // Adjustable cooling rate
-  uint8_t sparking = 120; // Adjustable spark rate
+  uint8_t cooling = 55;
+  uint8_t sparking = 120;
   
-  // Step 1: Cool down every cell a little
-  for(int i = 0; i < half; i++) {
+  for (int i = 0; i < half; i++) {
     heat[i] = qsub8(heat[i], random8(0, ((cooling * 10) / half) + 2));
   }
   
-  // Step 2: Heat from each cell drifts up and diffuses
-  for(int k = half - 1; k >= 2; k--) {
+  for (int k = half - 1; k >= 2; k--) {
     heat[k] = (heat[k - 1] + heat[k - 2] + heat[k - 2]) / 3;
   }
   
-  // Step 3: Randomly ignite new sparks near bottom
-  if(random8() < sparking) {
+  if (random8() < sparking) {
     int y = random8(7);
     heat[y] = qadd8(heat[y], random8(160, 255));
   }
   
-  // Step 4: Convert heat to LED colors (mirrored for full strip)
-  for(int j = 0; j < half; j++) {
+  for (int j = 0; j < half; j++) {
     CRGB color = ColorFromPalette(HeatColors_p, scale8(heat[j], 240));
     leds[half + j] = color;
-    leds[half - 1 - j] = color;  // Mirror effect
+    leds[half - 1 - j] = color;
   }
 }
 
 void lightningStorm() {
-  // Dark stormy background with lightning strikes
   static unsigned long lastStrike = 0;
   unsigned long currentTime = millis();
   
-  // Fade to dark blue stormy background
-  for(int i = 0; i < NUM_LEDS; i++) {
-    leds[i].nscale8(220); // Fade existing
-    leds[i] += CRGB(0, 0, 15); // Add dark blue atmosphere
+  for (int i = 0; i < NUM_LEDS; i++) {
+    leds[i].nscale8(220);
+    leds[i] += CRGB(0, 0, 15);
   }
   
-  // Random lightning strikes
-  if(currentTime - lastStrike > random16(100, 2000)) {
+  if (currentTime - lastStrike > random16(100, 2000)) {
     lastStrike = currentTime;
-    
-    // Lightning strike position and length
     int strikePos = random16(NUM_LEDS - 30);
     int strikeLength = random8(10, 25);
     
-    // Bright white lightning
-    for(int i = strikePos; i < strikePos + strikeLength && i < NUM_LEDS; i++) {
-      leds[i] = CRGB(255, 255, 255); // Bright white
+    for (int i = strikePos; i < strikePos + strikeLength && i < NUM_LEDS; i++) {
+      leds[i] = CRGB(255, 255, 255);
     }
     
-    // Secondary weaker strikes
-    if(random8() < 150) {
+    if (random8() < 150) {
       int secondaryPos = strikePos + random8(-5, 5);
       int secondaryLen = random8(5, 12);
-      for(int i = secondaryPos; i < secondaryPos + secondaryLen && i >= 0 && i < NUM_LEDS; i++) {
-        leds[i] = CRGB(200, 200, 255); // Bluish lightning
+      for (int i = secondaryPos; i < secondaryPos + secondaryLen && i >= 0 && i < NUM_LEDS; i++) {
+        leds[i] = CRGB(200, 200, 255);
       }
     }
   }
 }
 
 void plasmaField() {
-  // Multiple overlapping plasma waves - perfect for music!
   static uint16_t plasmaTime = 0;
   static uint8_t plasmaHue = 0;
   
   plasmaTime += 2;
   plasmaHue += 1;
   
-  for(int i = 0; i < NUM_LEDS; i++) {
-    // Multiple layered sine waves
+  for (int i = 0; i < NUM_LEDS; i++) {
     uint8_t wave1 = sin8(plasmaTime/4 + i * 8);
     uint8_t wave2 = sin8(plasmaTime/3 + i * 6 + 85);
     uint8_t wave3 = sin8(plasmaTime/5 + i * 4 + 170);
     uint8_t wave4 = sin8(plasmaTime/7 + i * 12);
     
-    // Combine waves
     uint8_t combined = (wave1/4 + wave2/3 + wave3/3 + wave4/6);
     uint8_t hue = plasmaHue + combined/2;
     uint8_t brightness = combined + sin8(plasmaTime/8 + i)/4;
@@ -1217,7 +763,6 @@ void plasmaField() {
 }
 
 void meteorShower() {
-  // Multiple meteors with trails
   struct Meteor {
     int16_t pos;
     uint8_t hue;
@@ -1228,37 +773,32 @@ void meteorShower() {
   static bool initialized = false;
   static unsigned long lastUpdate = 0;
   
-  if(!initialized) {
-    for(int i = 0; i < 6; i++) {
+  if (!initialized) {
+    for (int i = 0; i < 6; i++) {
       meteors[i] = {(int16_t)(-random8(20)), (uint8_t)random8(), (uint8_t)(3 + random8(4)), (int8_t)(1 + random8(2))};
     }
     initialized = true;
   }
   
-  // Fade trail
   fadeToBlackBy(leds, NUM_LEDS, 60);
   
-  // Update meteors
-  if(millis() - lastUpdate > 50) {
+  if (millis() - lastUpdate > 50) {
     lastUpdate = millis();
     
-    for(int m = 0; m < 6; m++) {
+    for (int m = 0; m < 6; m++) {
       Meteor &meteor = meteors[m];
       
-      // Draw meteor trail
-      for(int t = 0; t < meteor.size; t++) {
+      for (int t = 0; t < meteor.size; t++) {
         int16_t trailPos = meteor.pos - t;
-        if(trailPos >= 0 && trailPos < NUM_LEDS) {
+        if (trailPos >= 0 && trailPos < NUM_LEDS) {
           uint8_t brightness = map(t, 0, meteor.size-1, 255, 50);
           leds[trailPos] += CHSV(meteor.hue, 200, brightness);
         }
       }
       
-      // Move meteor
       meteor.pos += meteor.speed;
       
-      // Reset if off screen
-      if(meteor.pos >= NUM_LEDS + meteor.size) {
+      if (meteor.pos >= NUM_LEDS + meteor.size) {
         meteor.pos = -meteor.size;
         meteor.hue = random8();
         meteor.size = 3 + random8(4);
@@ -1269,9 +809,8 @@ void meteorShower() {
 }
 
 void auroraWaves() {
-  // Flowing aurora waves - smooth and musical
   static uint16_t wave1_pos = 0, wave2_pos = 0, wave3_pos = 0;
-  static uint8_t auroraHue = 96; // Start with green
+  static uint8_t auroraHue = 96;
   
   wave1_pos += 2;
   wave2_pos += 3;
@@ -1279,298 +818,44 @@ void auroraWaves() {
   
   fill_solid(leds, NUM_LEDS, CRGB::Black);
   
-  for(int i = 0; i < NUM_LEDS; i++) {
-    // Three overlapping aurora waves
+  for (int i = 0; i < NUM_LEDS; i++) {
     uint8_t wave1 = sin8(wave1_pos + i * 4);
     uint8_t wave2 = sin8(wave2_pos + i * 6 + 85);
     uint8_t wave3 = sin8(wave3_pos + i * 2 + 170);
     
-    // Aurora colors (green to blue)
     uint8_t hue1 = auroraHue + sin8(i * 8)/8;
     uint8_t hue2 = auroraHue + 40;
     uint8_t hue3 = auroraHue + 80;
     
-    // Only show bright parts of waves
-    if(wave1 > 100) {
+    if (wave1 > 100) {
       leds[i] += CHSV(hue1, 255, (wave1-100)*2);
     }
-    if(wave2 > 120) {
+    if (wave2 > 120) {
       leds[i] += CHSV(hue2, 240, (wave2-120)*2);
     }
-    if(wave3 > 140) {
+    if (wave3 > 140) {
       leds[i] += CHSV(hue3, 200, (wave3-140)*3);
     }
   }
   
-  // Slowly shift aurora color
-  if(random8() < 2) {
+  if (random8() < 2) {
     auroraHue += random8(5) - 2;
     auroraHue = constrain(auroraHue, 80, 140);
   }
 }
 
 void lavaFlow() {
-  // Flowing molten lava effect
-  for(int i = 0; i < NUM_LEDS; i++) {
-    // Use noise for organic flow
+  for (int i = 0; i < NUM_LEDS; i++) {
     uint8_t heat = inoise8(i * 40, millis() / 60);
     
-    // Create lava colors: black -> red -> orange -> yellow
     CRGB color;
-    if(heat < 128) {
-      // Black to red gradient
+    if (heat < 128) {
       color = CRGB(heat * 2, 0, 0);
     } else {
-      // Red to orange to yellow
       uint8_t excess = heat - 128;
       color = CRGB(255, excess * 2, excess / 4);
     }
     
     leds[i] = color;
   }
-}
-
-// Changes all LEDS to given color
-void allColor(CRGB c) {
-  for (int i = 0; i < NUM_LEDS; i++) {
-    leds[i] = c;
-  }
-  FastLED.show();
-}
-
-void allRandom() {
-  for (int i = 0; i < NUM_LEDS; i++) {
-    leds[i] = randomColor();
-  }
-  FastLED.show();
-}
-void doDissolve() {
-  disolve(15, 100, MEDIUM);
-}
-
-// Random disolve colors
-void disolve(int simultaneous, int cycles, int speed) {
-  for (int i = 0; i < cycles; i++) {
-    for (int j = 0; j < simultaneous; j++) {
-      int idx = random(NUM_LEDS);
-      leds[idx] = CRGB::Black;
-    }
-    FastLED.show();
-    // delay(speed); // Non-blocking - removed for real-time sync
-  }
-
-  allColor(CRGB::Black);
-}
-
-// Flashes given color
-// If c==NULL, random color flash
-void flash(CRGB c, int count, int speed) {
-  for (int i = 0; i < count; i++) {
-    if (c) {
-      allColor(c);
-    } else {
-      allColor(randomColor());
-    }
-    // delay(speed); // Non-blocking - removed for real-time sync
-    allColor(CRGB::Black);
-    // delay(speed); // Non-blocking - removed for real-time sync
-  }
-}
-
-// Wipes color from end to end
-void colorWipe(CRGB c, int speed, int direction) {
-  for (int i = 0; i < NUM_LEDS; i++) {
-    if (direction == FORWARD) {
-      leds[i] = c;
-    } else {
-      leds[NUM_LEDS - 1 - i] = c;
-    }
-    FastLED.show();
-    // delay(speed); // Non-blocking - removed for real-time sync
-  }
-}
-
-// Rainbow colors that slowly cycle across LEDs
-void rainbow(int cycles, int speed) {  // TODO direction
-  if (cycles == 0) {
-    for (int i = 0; i < NUM_LEDS; i++) {
-      leds[i] = Wheel(((i * 256 / NUM_LEDS)) & 255);
-    }
-    FastLED.show();
-  } else {
-    for (int j = 0; j < 256 * cycles; j++) {
-      for (int i = 0; i < NUM_LEDS; i++) {
-        leds[i] = Wheel(((i * 256 / NUM_LEDS) + j) & 255);
-      }
-      FastLED.show();
-      // delay(speed); // Non-blocking - removed for real-time sync
-    }
-  }
-}
-
-// Theater-style crawling lights
-void theaterChase(CRGB c, int cycles, int speed) {  // TODO direction
-
-  for (int j = 0; j < cycles; j++) {
-    for (int q = 0; q < 3; q++) {
-      for (int i = 0; i < NUM_LEDS; i = i + 3) {
-        int pos = i + q;
-        leds[pos] = c;  //turn every third pixel on
-      }
-      FastLED.show();
-
-      // delay(speed); // Non-blocking - removed for real-time sync
-
-      for (int i = 0; i < NUM_LEDS; i = i + 3) {
-        leds[i + q] = CRGB::Black;  //turn every third pixel off
-      }
-    }
-  }
-}
-
-void doChase(){
-   // Non-blocking chase pattern
-   static uint8_t chasePosition = 0;
-   static unsigned long lastChaseUpdate = 0;
-   
-   unsigned long now = millis();
-   if (now - lastChaseUpdate > MEDIUM) {
-     // Clear all LEDs
-     for (int i = 0; i < NUM_LEDS; i++) {
-       leds[i] = CRGB::Black;
-     }
-     
-     // Set every third LED starting from chasePosition
-     for (int i = chasePosition; i < NUM_LEDS; i += 3) {
-       leds[i] = Wheel((i + chasePosition * 10) % 255);
-     }
-     
-     chasePosition = (chasePosition + 1) % 3;
-     lastChaseUpdate = now;
-   }
-}
-
-// Theater-style crawling lights with rainbow effect
-void theaterChaseRainbow(int cycles, int speed) {  // TODO direction, duration
-  for (int j = 0; j < 256 * cycles; j++) {         // cycle all 256 colors in the wheel
-    for (int q = 0; q < 3; q++) {
-      for (int i = 0; i < NUM_LEDS; i = i + 3) {
-        int pos = i + q;
-        leds[pos] = Wheel((i + j) % 255);  //turn every third pixel on
-      }
-      FastLED.show();
-
-      // delay(speed); // Non-blocking - removed for real-time sync
-
-      for (int i = 0; i < NUM_LEDS; i = i + 3) {
-        leds[i + q] = CRGB::Black;  //turn every third pixel off
-      }
-    }
-  }
-}
-
-void doLightning(){
-  lightning(NULL,15,50,MEDIUM);
-  lightning(CRGB::White,20,50,MEDIUM);
-
-}
-// Random flashes of lightning
-void lightning(CRGB c, int simultaneous, int cycles, int speed) {
-  int flashes[simultaneous];
-
-  for (int i = 0; i < cycles; i++) {
-    for (int j = 0; j < simultaneous; j++) {
-      int idx = random(NUM_LEDS);
-      flashes[j] = idx;
-      leds[idx] = c ? c : randomColor();
-    }
-    FastLED.show();
-    // delay(speed); // Non-blocking - removed for real-time sync
-    for (int s = 0; s < simultaneous; s++) {
-      leds[flashes[s]] = CRGB::Black;
-    }
-    // delay(speed); // Non-blocking - removed for real-time sync
-  }
-}
-
-void doCylon(){
-   for(int i=0; i<2; i++){
-    cylon(randomColor(), 10,FAST);
-  }
-
-}
-
-// Sliding bar across LEDs
-void cylon(CRGB c, int width, int speed) {
-  // First slide the leds in one direction
-  for (int i = 0; i <= NUM_LEDS - width; i++) {
-    for (int j = 0; j < width; j++) {
-      leds[i + j] = c;
-    }
-
-    FastLED.show();
-
-    // now that we've shown the leds, reset to black for next loop
-    for (int j = 0; j < 5; j++) {
-      leds[i + j] = CRGB::Black;
-    }
-    // delay(speed); // Non-blocking - removed for real-time sync
-  }
-
-  // Now go in the other direction.
-  for (int i = NUM_LEDS - width; i >= 0; i--) {
-    for (int j = 0; j < width; j++) {
-      leds[i + j] = c;
-    }
-    FastLED.show();
-    for (int j = 0; j < width; j++) {
-      leds[i + j] = CRGB::Black;
-    }
-
-    // delay(speed); // Non-blocking - removed for real-time sync
-  }
-}
-
-void doStripes() {
-  for (int i = 0; i < 3; i++) {
-    CRGB c1 = randomColor();
-    CRGB c2 = randomColor();
-    stripes(c1, c2, 5);
-    // delay(2000); // Non-blocking - removed for real-time sync
-    stripes(c2, c1, 5);
-    // delay(2000); // Non-blocking - removed for real-time sync
-  }
-}
-// Display alternating stripes
-void stripes(CRGB c1, CRGB c2, int width) {
-  for (int i = 0; i < NUM_LEDS; i++) {
-    if (i % (width * 2) < width) {
-      leds[i] = c1;
-    } else {
-      leds[i] = c2;
-    }
-  }
-  FastLED.show();
-}
-
-// Theater-style crawling of stripes
-void stripesChase(CRGB c1, CRGB c2, int width, int cycles, int speed) {  // TODO direction
-}
-
-// Input a value 0 to 255 to get a color value.
-// The colours are a transition r - g - b - back to r.
-CRGB Wheel(byte WheelPos) {
-  if (WheelPos < 85) {
-    return CRGB(WheelPos * 3, 255 - WheelPos * 3, 0);
-  } else if (WheelPos < 170) {
-    WheelPos -= 85;
-    return CRGB(255 - WheelPos * 3, 0, WheelPos * 3);
-  } else {
-    WheelPos -= 170;
-    return CRGB(0, WheelPos * 3, 255 - WheelPos * 3);
-  }
-}
-
-CRGB randomColor() {
-  return Wheel(random(256));
 }
