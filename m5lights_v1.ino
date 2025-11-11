@@ -1,6 +1,6 @@
 /// @file    m5lights_v1_simple.ino
 /// @brief   Ultra-Simple ESP-NOW LED Sync with 12 Patterns + Music Mode
-/// @version 3.0.7
+/// @version 3.0.8
 /// @date    2024-10-26
 /// @author  John Cohn (adapted from Mark Kriegsman)
 ///
@@ -23,7 +23,7 @@
 FASTLED_USING_NAMESPACE
 
 // Version info
-#define VERSION "3.0.7"
+#define VERSION "3.0.8"
 
 // Hardware config
 #define LED_PIN 32
@@ -891,40 +891,65 @@ void auroraWaves() {
 }
 
 void lavaFlow() {
-  // Multiple moving heat layers for flowing lava effect
+  // Dynamic lava with directional flow and evolving colors
   uint32_t time = millis();
-  uint16_t flow1 = time / 30;   // Fast flow
-  uint16_t flow2 = time / 80;   // Medium flow  
-  uint16_t flow3 = time / 150;  // Slow flow
+  
+  // Multiple flow speeds creating turbulent movement
+  uint16_t mainFlow = time / 25;      // Primary lava flow direction
+  uint16_t bubbleFlow = time / 12;    // Fast bubbling
+  uint16_t waveFlow = time / 65;      // Medium wave motion
+  uint16_t slowChurn = time / 180;    // Deep slow churning
+  
+  // Evolving color temperature over time
+  uint8_t colorShift = (time / 100) & 255;  // Slowly cycle color temperature
   
   for (int i = 0; i < NUM_LEDS; i++) {
-    // Create flowing noise layers with different speeds and scales
-    uint8_t heat1 = inoise8(i * 30, flow1);        // Fast small bubbles
-    uint8_t heat2 = inoise8(i * 80, flow2);        // Medium streams
-    uint8_t heat3 = inoise8(i * 150, flow3);       // Large slow flows
+    // Create complex flowing heat patterns
+    uint8_t bubble = inoise8(i * 40 + bubbleFlow, bubbleFlow / 2);     // Fast bubbles
+    uint8_t wave = inoise8(i * 70, waveFlow);                          // Medium waves  
+    uint8_t flow = inoise8(i * 120, mainFlow);                         // Main flow
+    uint8_t churn = inoise8(i * 200, slowChurn);                       // Deep churning
     
-    // Combine heat sources with weighted mixing
-    uint16_t totalHeat = (heat1 * 2 + heat2 * 3 + heat3 * 1) / 3;
+    // Add directional movement by offsetting the position
+    uint16_t flowPos = i + (mainFlow / 8);  // Create flowing motion along strip
+    uint8_t directionalHeat = inoise8(flowPos * 60, time / 40);
+    
+    // Combine all heat sources with weighted mixing for complex patterns
+    uint16_t totalHeat = (bubble * 3 + wave * 4 + flow * 5 + churn * 2 + directionalHeat * 4) / 8;
     totalHeat = constrain(totalHeat, 0, 255);
     
-    // Create flowing lava color mapping
+    // Dynamic color temperature based on time
+    uint8_t tempShift = sin8(colorShift + i * 8) / 8;  // Subtle spatial color variation
+    
+    // Enhanced lava color mapping with dynamic temperature
     CRGB color;
-    if (totalHeat < 80) {
-      // Cool/dark lava - deep red to black
-      color = CRGB(totalHeat, 0, 0);
-    } else if (totalHeat < 160) {
-      // Warm lava - red to orange
-      uint8_t progress = totalHeat - 80;
-      color = CRGB(80 + progress * 2, progress, 0);
-    } else if (totalHeat < 200) {
-      // Hot lava - orange to yellow  
-      uint8_t progress = totalHeat - 160;
-      color = CRGB(255, 160 + progress * 2, progress / 2);
+    uint8_t adjustedHeat = qadd8(totalHeat, tempShift);
+    
+    if (adjustedHeat < 60) {
+      // Cool/dark lava - nearly black to deep red
+      color = CRGB(adjustedHeat / 2, 0, 0);
+    } else if (adjustedHeat < 120) {
+      // Warming lava - red to orange-red
+      uint8_t progress = adjustedHeat - 60;
+      color = CRGB(30 + progress * 3, progress / 3, 0);
+    } else if (adjustedHeat < 180) {
+      // Hot lava - orange to bright orange
+      uint8_t progress = adjustedHeat - 120;
+      color = CRGB(255, 20 + progress * 3, progress / 8);
+    } else if (adjustedHeat < 220) {
+      // Very hot - orange to yellow
+      uint8_t progress = adjustedHeat - 180;
+      color = CRGB(255, 200 + progress, progress / 2);
     } else {
-      // Molten white-hot lava
-      uint8_t progress = totalHeat - 200;
-      color = CRGB(255, 255, progress * 4);
+      // Molten white-hot with dynamic intensity
+      uint8_t progress = adjustedHeat - 220;
+      uint8_t whiteLevel = progress * 6;
+      color = CRGB(255, 255, whiteLevel);
     }
+    
+    // Add subtle flickering by modulating brightness
+    uint8_t flicker = sin8(time / 8 + i * 16) / 16;  // Gentle flicker
+    color.nscale8(240 + flicker);  // Subtle brightness variation
     
     leds[i] = color;
   }
