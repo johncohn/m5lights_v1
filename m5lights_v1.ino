@@ -1,6 +1,6 @@
 /// @file    m5lights_v1_simple.ino
 /// @brief   Ultra-Simple ESP-NOW LED Sync with 12 Patterns + Music Mode
-/// @version 3.0.8
+/// @version 3.1.0
 /// @date    2024-10-26
 /// @author  John Cohn (adapted from Mark Kriegsman)
 ///
@@ -18,17 +18,19 @@
 #include <FastLED.h>
 #include <esp_now.h>
 #include <WiFi.h>
+#include <esp_system.h>
+#include <esp_task_wdt.h>
 #include <esp_wifi.h>
 
 FASTLED_USING_NAMESPACE
 
 // Version info
-#define VERSION "3.0.8"
+#define VERSION "3.1.1"
 
 // Hardware config
 #define LED_PIN 32
 #define NUM_LEDS 200
-#define BRIGHTNESS 30
+#define BRIGHTNESS 22  // Reduced by 25% from 30 for power stability
 #define COLOR_ORDER GRB
 #define CHIPSET WS2811
 
@@ -85,6 +87,11 @@ float peakLevelSmooth = 0.99f;     // Faster adaptation for peaks
 bool autoAdvancePatterns = true;   // Whether patterns auto-advance
 unsigned long lastPatternChange = 0;
 
+// ESP-NOW rejoin logic
+unsigned long lastRejoinScan = 0;
+bool rejoinMode = false;
+uint8_t rejoinAttempts = 0;
+
 // Audio configuration
 static constexpr size_t MIC_BUF_LEN = 240;
 static constexpr int MIC_SR = 44100;
@@ -101,7 +108,8 @@ unsigned long lastBroadcast = 0;
 // Timing constants
 #define LONG_PRESS_TIME_MS 1500
 #define BROADCAST_INTERVAL_MS 50
-#define LEADER_TIMEOUT_MS 3000
+#define LEADER_TIMEOUT_MS 8000  // Increased from 3s to 8s for robustness
+#define REJOIN_SCAN_INTERVAL_MS 15000  // Scan for leaders every 15 seconds
 
 // Pattern function declarations
 void rainbow();
@@ -121,12 +129,12 @@ void lavaFlow();
 typedef void (*SimplePatternList[])();
 SimplePatternList gPatterns = { 
   rainbow, doChase, juggle, rainbowWithGlitter, confetti, bpm,
-  fire, lightningStorm, plasmaField, meteorShower, auroraWaves, lavaFlow
+  fire, lightningStorm, plasmaField, meteorShower, auroraWaves
 };
 
 const char* patternNames[] = {
   "Rainbow", "Chase", "Juggle", "Rainbow+Glitter", "Confetti", "BPM",
-  "Fire", "Lightning", "Plasma", "Meteors", "Aurora", "Lava"
+  "Fire", "Lightning", "Plasma", "Meteors", "Aurora"
 };
 
 #define ARRAY_SIZE(A) (sizeof(A) / sizeof((A)[0]))
@@ -571,11 +579,37 @@ void nextPattern() {
   gCurrentPatternNumber = (gCurrentPatternNumber + 1) % ARRAY_SIZE(gPatterns);
 }
 
-// Check for leader timeout
+// Enhanced leader timeout with rejoin logic
 void checkLeaderTimeout() {
-  if (leaderDataActive && (millis() - lastLeaderMessage > LEADER_TIMEOUT_MS)) {
+  unsigned long now = millis();
+  
+  if (leaderDataActive && (now - lastLeaderMessage > LEADER_TIMEOUT_MS)) {
     leaderDataActive = false;
-    Serial.println("Leader timeout");
+    rejoinMode = true;
+    rejoinAttempts = 0;
+    lastRejoinScan = now;
+    Serial.println("Leader timeout - entering rejoin mode");
+  }
+  
+  // Active rejoin scanning for dropped followers
+  if (rejoinMode && (now - lastRejoinScan > REJOIN_SCAN_INTERVAL_MS)) {
+    if (rejoinAttempts < 5) {  // Try 5 times before giving up
+      Serial.print("Rejoin attempt ");
+      Serial.println(rejoinAttempts + 1);
+      
+      // Reset ESP-NOW to try reconnecting
+      esp_now_deinit();
+      delay(100);
+      setupESPNOW();
+      
+      rejoinAttempts++;
+      lastRejoinScan = now;
+      
+      if (rejoinAttempts >= 5) {
+        rejoinMode = false;
+        Serial.println("Rejoin attempts exhausted - staying standalone");
+      }
+    }
   }
 }
 
@@ -590,6 +624,15 @@ void setup() {
   
   Serial.begin(115200);
   delay(1000);
+  
+  // Initialize watchdog timer (30 second timeout)
+  esp_task_wdt_config_t wdt_config = {
+    .timeout_ms = 30000,
+    .idle_core_mask = (1 << portNUM_PROCESSORS) - 1,
+    .trigger_panic = true
+  };
+  esp_task_wdt_init(&wdt_config);
+  esp_task_wdt_add(NULL);
   
   setupButtonInterrupt();
   initAudio();
@@ -614,6 +657,9 @@ void setup() {
 }
 
 void loop() {
+  // Reset watchdog timer
+  esp_task_wdt_reset();
+  
   M5.update();
   handleButtons();
   handlePatternButtons();
@@ -891,65 +937,85 @@ void auroraWaves() {
 }
 
 void lavaFlow() {
-  // Dynamic lava with directional flow and evolving colors
+  // Ultra-dynamic lava with faster, more organic movement
   uint32_t time = millis();
   
-  // Multiple flow speeds creating turbulent movement
-  uint16_t mainFlow = time / 25;      // Primary lava flow direction
-  uint16_t bubbleFlow = time / 12;    // Fast bubbling
-  uint16_t waveFlow = time / 65;      // Medium wave motion
-  uint16_t slowChurn = time / 180;    // Deep slow churning
+  // Faster, more chaotic flow speeds for organic movement
+  uint16_t mainFlow = time / 15;      // Faster primary flow (was 25)
+  uint16_t bubbleFlow = time / 7;     // Much faster bubbling (was 12)
+  uint16_t waveFlow = time / 35;      // Faster waves (was 65)
+  uint16_t slowChurn = time / 90;     // Faster deep churning (was 180)
+  uint16_t fastTurbulence = time / 4; // New: very fast surface turbulence
   
-  // Evolving color temperature over time
-  uint8_t colorShift = (time / 100) & 255;  // Slowly cycle color temperature
+  // Dynamic color evolution with more variation
+  uint8_t colorShift = (time / 60) & 255;  // Faster color cycling (was 100)
+  uint8_t colorVariation = (time / 40) & 255;  // Additional color complexity
   
   for (int i = 0; i < NUM_LEDS; i++) {
-    // Create complex flowing heat patterns
-    uint8_t bubble = inoise8(i * 40 + bubbleFlow, bubbleFlow / 2);     // Fast bubbles
-    uint8_t wave = inoise8(i * 70, waveFlow);                          // Medium waves  
-    uint8_t flow = inoise8(i * 120, mainFlow);                         // Main flow
-    uint8_t churn = inoise8(i * 200, slowChurn);                       // Deep churning
+    // Create highly complex flowing heat patterns with more layers
+    uint8_t bubble = inoise8(i * 35 + bubbleFlow, bubbleFlow / 3);     // Tighter, faster bubbles
+    uint8_t wave = inoise8(i * 55, waveFlow);                          // More frequent waves
+    uint8_t flow = inoise8(i * 85, mainFlow);                          // Tighter main flow
+    uint8_t churn = inoise8(i * 150, slowChurn);                       // More active churning
+    uint8_t turbulence = inoise8(i * 25 + fastTurbulence, fastTurbulence / 2); // Surface chaos
     
-    // Add directional movement by offsetting the position
-    uint16_t flowPos = i + (mainFlow / 8);  // Create flowing motion along strip
-    uint8_t directionalHeat = inoise8(flowPos * 60, time / 40);
+    // Multiple directional flows for organic movement
+    uint16_t flowPos1 = i + (mainFlow / 6);  // Faster primary flow
+    uint16_t flowPos2 = i - (bubbleFlow / 10);  // Counter-flow
+    uint8_t directionalHeat1 = inoise8(flowPos1 * 45, time / 25);
+    uint8_t directionalHeat2 = inoise8(flowPos2 * 65, time / 35);
     
-    // Combine all heat sources with weighted mixing for complex patterns
-    uint16_t totalHeat = (bubble * 3 + wave * 4 + flow * 5 + churn * 2 + directionalHeat * 4) / 8;
+    // Complex heat mixing with more dynamic interaction
+    uint16_t totalHeat = (bubble * 4 + wave * 3 + flow * 5 + churn * 3 + 
+                         turbulence * 6 + directionalHeat1 * 4 + directionalHeat2 * 2) / 10;
     totalHeat = constrain(totalHeat, 0, 255);
     
-    // Dynamic color temperature based on time
-    uint8_t tempShift = sin8(colorShift + i * 8) / 8;  // Subtle spatial color variation
+    // Enhanced dynamic color temperature with spatial variation
+    uint8_t tempShift = sin8(colorShift + i * 12) / 6;  // More color variation
+    uint8_t spatialVar = sin8(colorVariation + i * 20) / 4;  // Additional spatial variation
     
-    // Enhanced lava color mapping with dynamic temperature
+    // Richer lava color palette with more reds, oranges, and yellows
     CRGB color;
-    uint8_t adjustedHeat = qadd8(totalHeat, tempShift);
+    uint8_t adjustedHeat = qadd8(qadd8(totalHeat, tempShift), spatialVar);
     
-    if (adjustedHeat < 60) {
-      // Cool/dark lava - nearly black to deep red
-      color = CRGB(adjustedHeat / 2, 0, 0);
-    } else if (adjustedHeat < 120) {
-      // Warming lava - red to orange-red
-      uint8_t progress = adjustedHeat - 60;
-      color = CRGB(30 + progress * 3, progress / 3, 0);
-    } else if (adjustedHeat < 180) {
-      // Hot lava - orange to bright orange
-      uint8_t progress = adjustedHeat - 120;
-      color = CRGB(255, 20 + progress * 3, progress / 8);
-    } else if (adjustedHeat < 220) {
-      // Very hot - orange to yellow
-      uint8_t progress = adjustedHeat - 180;
-      color = CRGB(255, 200 + progress, progress / 2);
+    if (adjustedHeat < 50) {
+      // Deep dark red to rich red
+      uint8_t red = 20 + (adjustedHeat * 4);
+      color = CRGB(red, adjustedHeat / 8, 0);
+    } else if (adjustedHeat < 100) {
+      // Rich reds to warm orange-reds
+      uint8_t progress = adjustedHeat - 50;
+      uint8_t red = 220 + (progress / 2);
+      uint8_t green = progress * 2;
+      color = CRGB(red, green, 0);
+    } else if (adjustedHeat < 150) {
+      // Warm oranges to bright oranges
+      uint8_t progress = adjustedHeat - 100;
+      uint8_t red = 255;
+      uint8_t green = 100 + (progress * 2);
+      uint8_t blue = progress / 8;
+      color = CRGB(red, green, blue);
+    } else if (adjustedHeat < 200) {
+      // Bright orange to golden yellow
+      uint8_t progress = adjustedHeat - 150;
+      uint8_t red = 255;
+      uint8_t green = 200 + progress;
+      uint8_t blue = progress / 3;
+      color = CRGB(red, green, blue);
     } else {
-      // Molten white-hot with dynamic intensity
-      uint8_t progress = adjustedHeat - 220;
-      uint8_t whiteLevel = progress * 6;
-      color = CRGB(255, 255, whiteLevel);
+      // Golden yellow to bright white-yellow
+      uint8_t progress = adjustedHeat - 200;
+      uint8_t red = 255;
+      uint8_t green = 255;
+      uint8_t blue = 50 + (progress * 3);
+      color = CRGB(red, green, blue);
     }
     
-    // Add subtle flickering by modulating brightness
-    uint8_t flicker = sin8(time / 8 + i * 16) / 16;  // Gentle flicker
-    color.nscale8(240 + flicker);  // Subtle brightness variation
+    // Enhanced flickering with multiple frequency layers
+    uint8_t flicker1 = sin8(time / 5 + i * 20) / 20;   // Fast flicker
+    uint8_t flicker2 = sin8(time / 12 + i * 8) / 32;   // Medium flicker
+    uint8_t brightness = 220 + flicker1 + flicker2;
+    color.nscale8(brightness);
     
     leds[i] = color;
   }
