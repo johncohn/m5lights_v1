@@ -1,10 +1,15 @@
 /// @file    m5lights_v1_simple.ino
 /// @brief   Ultra-Simple ESP-NOW LED Sync with 12 Patterns + Music Mode
-/// @version 3.3.1
+/// @version 3.3.2
 /// @date    2024-10-26
 /// @author  John Cohn (adapted from Mark Kriegsman)
 ///
 /// @changelog
+/// v3.3.2 (2024-10-26) - Fixed ESP-NOW Packet Loss (CRITICAL FIX!)
+///   - Added 500μs delay between packet sends to prevent buffer overflow
+///   - Fixes "2 packets failed, 3 succeeded" broadcast failures
+///   - Followers now receive all packets and display complete frames
+///   - This was the root cause of followers not syncing!
 /// v3.3.1 (2024-10-26) - Added Leader Broadcast Debug Logging
 ///   - Leader now logs broadcast activity (once per second summary)
 ///   - Shows when broadcasts are skipped due to timing
@@ -85,7 +90,7 @@
 FASTLED_USING_NAMESPACE
 
 // Version info
-#define VERSION "3.3.1"
+#define VERSION "3.3.2"
 
 // Hardware config
 #define LED_PIN 32
@@ -360,6 +365,9 @@ void broadcastLEDData() {
     } else {
       failCount++;
     }
+
+    // Small delay between packets to prevent ESP-NOW buffer overflow
+    delayMicroseconds(500);  // 0.5ms between packets
   }
 
   // Log if any packets failed
