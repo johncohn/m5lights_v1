@@ -1,10 +1,17 @@
 /// @file    m5lights_v1_simple.ino
 /// @brief   Ultra-Simple ESP-NOW LED Sync with 12 Patterns + Music Mode
-/// @version 3.1.8
+/// @version 3.1.9
 /// @date    2024-10-26
 /// @author  John Cohn (adapted from Mark Kriegsman)
 ///
 /// @changelog
+/// v3.1.9 (2024-10-26) - Fixed Leader/Follower Sync Timing
+///   - CRITICAL FIX: Leader now broadcasts BEFORE showing LEDs (was backwards!)
+///   - Leader: generate pattern → broadcast → wait LEADER_DELAY_MS → show
+///   - Followers: receive all packets → show immediately
+///   - Both leader and followers now show LEDs at the same time
+///   - Calibrated LEADER_DELAY_MS to 50ms for perfect synchronization
+///   - Fixed ESP-NOW callback signature for esp32 v3.3.3 compatibility
 /// v3.1.8 (2024-10-26) - Fixed Adaptive Tracking
 ///   - noiseFloor now always adapts (was only updating when audio < noiseFloor)
 ///   - Both noiseFloor and peakLevel continuously track audio range
@@ -56,7 +63,7 @@
 FASTLED_USING_NAMESPACE
 
 // Version info
-#define VERSION "3.1.8"
+#define VERSION "3.1.9"
 
 // Hardware config
 #define LED_PIN 32
@@ -64,6 +71,9 @@ FASTLED_USING_NAMESPACE
 #define BRIGHTNESS 25  // Adjusted for M5Stick power stability
 #define COLOR_ORDER GRB
 #define CHIPSET WS2811
+
+// Leader sync delay - adjust to match follower display timing
+#define LEADER_DELAY_MS 50  // Delay before leader shows LEDs (ms)
 
 CRGB leds[NUM_LEDS];
 
@@ -171,7 +181,7 @@ const char* patternNames[] = {
 #define ARRAY_SIZE(A) (sizeof(A) / sizeof((A)[0]))
 
 // ESP-NOW callbacks
-void onDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
+void onDataSent(const wifi_tx_info_t *info, esp_now_send_status_t status) {
   if (status == ESP_NOW_SEND_SUCCESS) {
     Serial.println("ESP-NOW: Send OK");
   } else {
@@ -706,19 +716,28 @@ void loop() {
     // Music mode - update audio and run pattern
     updateAudioLevel();
     gPatterns[gCurrentPatternNumber]();
+
+    // If leader: broadcast FIRST, then wait for followers to receive/process, then show
+    if (currentMode == MODE_MUSIC_LEADER && (currentTime - lastBroadcast > BROADCAST_INTERVAL_MS)) {
+      broadcastLEDData();
+      lastBroadcast = currentTime;
+      delay(LEADER_DELAY_MS);  // Wait for followers to receive and process
+    }
+
     FastLED.show();
   } else {
     // Normal mode - just run pattern
     FastLED.setBrightness(BRIGHTNESS);
     gPatterns[gCurrentPatternNumber]();
+
+    // If leader: broadcast FIRST, then wait for followers to receive/process, then show
+    if (currentMode == MODE_NORMAL_LEADER && (currentTime - lastBroadcast > BROADCAST_INTERVAL_MS)) {
+      broadcastLEDData();
+      lastBroadcast = currentTime;
+      delay(LEADER_DELAY_MS);  // Wait for followers to receive and process
+    }
+
     FastLED.show();
-  }
-  
-  // Broadcast LED data if we're a leader
-  if ((currentMode == MODE_NORMAL_LEADER || currentMode == MODE_MUSIC_LEADER) && 
-      (currentTime - lastBroadcast > BROADCAST_INTERVAL_MS)) {
-    broadcastLEDData();
-    lastBroadcast = currentTime;
   }
   
   // Update display periodically
