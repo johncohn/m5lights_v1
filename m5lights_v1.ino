@@ -1,10 +1,41 @@
 /// @file    m5lights_v1_simple.ino
 /// @brief   Ultra-Simple ESP-NOW LED Sync with 12 Patterns + Music Mode
-/// @version 3.1.0
+/// @version 3.1.8
 /// @date    2024-10-26
 /// @author  John Cohn (adapted from Mark Kriegsman)
 ///
 /// @changelog
+/// v3.1.8 (2024-10-26) - Fixed Adaptive Tracking
+///   - noiseFloor now always adapts (was only updating when audio < noiseFloor)
+///   - Both noiseFloor and peakLevel continuously track audio range
+///   - Brightness always scales full 1-25 range based on recent audio levels
+///   - Talking quietly or loudly both give full brightness variation
+/// v3.1.7 (2024-10-26) - Simplified Direct Audio Mapping
+///   - Removed all complex adaptive brightness range logic
+///   - Direct mapping: audioLevel → brightness (loud=25, quiet=1)
+///   - Fast-adapting noiseFloor/peakLevel keep range appropriate
+///   - Immediate voice amplitude response
+/// v3.1.6 (2024-10-26) - Much More Aggressive Contrast Mapping
+///   - Changed dynamic range threshold from 0.30 to 0.10 for full brightness range
+///   - Normal talking now produces full 1-25 contrast (was only getting 14-25)
+///   - Dramatic bright/dark pulsing with much less sound variation needed
+/// v3.1.5 (2024-10-26) - Ultra-Fast Audio Response
+///   - Reduced time constants for immediate contrast when talking/music starts
+///   - peakLevelSmooth: 0.90 → 0.5 (50% adaptation per frame)
+///   - noiseFloorSmooth: 0.95 → 0.7 (30% adaptation per frame)
+///   - Lights now react almost instantly to sound dynamics changes
+/// v3.1.4 (2024-10-26) - Extended LED Count to 200
+///   - Increased NUM_LEDS from 100 to 200
+/// v3.1.3 (2024-10-26) - Fixed: Music Brightness Based on Dynamic Range
+///   - Changed adaptive brightness to use dynamic range (beat contrast) not absolute level
+///   - Low dynamic range (constant noise): lights stay bright (20-25) with small flicker
+///   - High dynamic range (music beats): lights use full range (1-25) for dramatic pulsing
+/// v3.1.2 (2024-10-26) - Adaptive Music Brightness & Power Optimization
+///   - Adaptive brightness range based on absolute sound levels
+///   - Quiet environment: lights stay bright (20-25) with subtle modulation
+///   - Loud environment: full dynamic range (1-25) with dramatic pulsing
+///   - Reduced to 100 LEDs for M5Stick 5V power stability
+///   - Aggressive audio normalization for responsive music mode
 /// v3.0.0 (2024-10-26) - Clean Ultra-Simple ESP-NOW Implementation
 ///   - Complete rewrite with simple 4-mode system
 ///   - Normal, Music, Normal Leader, Music Leader modes
@@ -25,12 +56,12 @@
 FASTLED_USING_NAMESPACE
 
 // Version info
-#define VERSION "3.1.1"
+#define VERSION "3.1.8"
 
 // Hardware config
 #define LED_PIN 32
 #define NUM_LEDS 200
-#define BRIGHTNESS 22  // Reduced by 25% from 30 for power stability
+#define BRIGHTNESS 25  // Adjusted for M5Stick power stability
 #define COLOR_ORDER GRB
 #define CHIPSET WS2811
 
@@ -77,11 +108,11 @@ uint32_t lastBpmMillis = 0;
 bool audioDetected = true;
 uint8_t musicBrightness = BRIGHTNESS;
 
-// Adaptive audio scaling
+// Adaptive audio scaling - Ultra-fast response for immediate contrast
 float noiseFloor = 0.01f;          // Moving average of quiet ambient sound
 float peakLevel = 0.1f;            // Moving average of loud sound peaks
-float noiseFloorSmooth = 0.998f;   // Slow adaptation for noise floor
-float peakLevelSmooth = 0.99f;     // Faster adaptation for peaks
+float noiseFloorSmooth = 0.7f;     // Ultra-fast adaptation (30% new value per frame)
+float peakLevelSmooth = 0.5f;      // Ultra-fast decay (50% new value per frame)
 
 // Pattern control
 bool autoAdvancePatterns = true;   // Whether patterns auto-advance
@@ -324,30 +355,21 @@ void updateAudioLevel() {
   detectAudioFrame();
   updateBPM();
   
-  // Adaptive noise floor and peak tracking
-  if (audioLevel < noiseFloor || noiseFloor == 0.01f) {
-    noiseFloor = noiseFloor * noiseFloorSmooth + audioLevel * (1.0f - noiseFloorSmooth);
-  }
-  
-  if (audioLevel > peakLevel) {
-    peakLevel = peakLevel * peakLevelSmooth + audioLevel * (1.0f - peakLevelSmooth);
-  }
-  
-  // Ensure we have a reasonable dynamic range
-  float dynamicRange = peakLevel - noiseFloor;
-  if (dynamicRange < 0.02f) {
-    dynamicRange = 0.02f;  // Minimum range to prevent division by zero
-  }
-  
-  // Map audio level from [noiseFloor, peakLevel] to [1, 96] brightness
-  float normalizedLevel = (audioLevel - noiseFloor) / dynamicRange;
+  // Always adapt BOTH noiseFloor and peakLevel to track current audio range
+  // This ensures brightness always scales from min to max based on recent audio
+  noiseFloor = noiseFloor * noiseFloorSmooth + audioLevel * (1.0f - noiseFloorSmooth);
+  peakLevel = peakLevel * peakLevelSmooth + audioLevel * (1.0f - peakLevelSmooth);
+
+  // Simple direct mapping: loud voice = bright (25), quiet voice = dark (1)
+  // Fast-adapting noiseFloor and peakLevel keep the range appropriate
+  float range = peakLevel - noiseFloor;
+  if (range < 0.01f) range = 0.01f;  // Prevent division by zero
+
+  float normalizedLevel = (audioLevel - noiseFloor) / range;
   normalizedLevel = constrain(normalizedLevel, 0.0f, 1.0f);
-  
-  // Full contrast: 1 (barely on) to 96 (full brightness)
-  uint8_t minBrightness = 1;
-  uint8_t maxBrightness = 96;
-  
-  musicBrightness = minBrightness + (uint8_t)(normalizedLevel * (maxBrightness - minBrightness));
+
+  // Direct 1-25 mapping - no adaptive complexity
+  musicBrightness = 1 + (uint8_t)(normalizedLevel * 24);
   FastLED.setBrightness(musicBrightness);
 }
 
