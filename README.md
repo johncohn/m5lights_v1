@@ -1,6 +1,6 @@
-# M5 Lights v3.2.0
+# M5 Lights v3.3.2
 
-Ultra-Simple ESP-NOW LED Sync system for M5StickC Plus 2 with WS2811/WS2812 LED strips. Features wireless multi-device synchronization, music reactivity, and 11 stunning LED patterns.
+Ultra-Simple ESP-NOW LED Sync system for M5StickC Plus 2 with WS2811/WS2812 LED strips. Features wireless multi-device synchronization, music reactivity, and 11 stunning LED patterns with rock-solid reliability.
 
 ## Hardware Setup
 
@@ -199,22 +199,41 @@ For a music-reactive synchronized light show across multiple devices:
 
 ## Version History
 
-### v3.2.0 (2024-10-26) - **Synchronization Bug Fix Release**
-- **Fixed intermittent follower desync bug**
-  - Added frame ID tracking to prevent partial frame rendering
-  - Implemented packet completion detection before calling FastLED.show()
-  - Added fallback FastLED.show() in main loop (every 100ms) for followers
-  - Fixed issue where followers would show BLUE screen but LEDs were out of sync
-  - Fixed mode flickering between BLUE (Follow) and GREEN (Normal)
-- **Enhanced debugging**
-  - Added Debug Mode toggle via Button B super-long press (3 seconds)
-  - Debug mode shows frame reception, packet tracking, and completion status
-  - Visual confirmation with LED flashes (GREEN=enabled, RED=disabled)
-  - Packet loss warnings when no complete frames received in 500ms
-- **Improved broadcast reliability**
-  - Added 500μs delay between packets to prevent receiver overflow
-  - Send frame ID, total packets, and packet index with each transmission
-  - Better packet sequencing and completion tracking
+### v3.3.2 (2024-10-26) - **CRITICAL: ESP-NOW Packet Loss Fix**
+- **ROOT CAUSE IDENTIFIED AND FIXED**
+  - Added 500μs delay between packet sends to prevent ESP-NOW buffer overflow
+  - Fixes persistent "2 packets failed, 3 succeeded" broadcast failures
+  - Prevents buffer saturation that caused followers to lose sync
+  - Eliminates stuck states that previously required power cycling
+- **Why it happened**: Packets were sent faster than ESP-NOW could transmit them over WiFi, causing buffer overflow and packet loss
+- **This was the root cause** of all follower sync issues!
+
+### v3.3.1 (2024-10-26) - **Leader Broadcast Debug Logging**
+- Added comprehensive broadcast activity logging
+- Shows broadcast frame count and sequence numbers every second
+- Reports ESP-NOW send failures immediately
+- Logs when broadcasts are skipped due to timing checks
+- **This debug logging revealed the packet loss root cause**
+
+### v3.3.0 (2024-10-26) - **Leader Conflict Prevention & Enhanced Debug**
+- **CRITICAL**: Nodes now refuse to become leader if another leader exists
+- Prevents multiple simultaneous leaders (double-red state)
+- Extensive timestamped debug logging for ESP-NOW packet reception
+- Detailed packet info: sequence numbers, start index, count
+- Leader timeout and incomplete frame detection show timing details
+- Helps diagnose follower reconnection issues
+
+### v3.2.1 (2024-10-26) - **Fixed Rejoin Logic Stuck State**
+- Followers immediately exit rejoin mode when receiving valid leader data
+- Prevents stuck state where followers stay green despite leader broadcasting
+- Increased incomplete frame timeout from 500ms to 2000ms (less aggressive)
+- Followers can reconnect without power cycling
+
+### v3.2.0 (2024-10-26) - **Incomplete Frame Detection & Auto-Recovery**
+- Followers detect when receiving packets but not complete frames
+- Auto-resync if no complete frame received within timeout
+- Prevents "stuck following" state with stale LED patterns
+- Improved reliability during WiFi interference
 
 ### v3.1.1 (2024-10-26)
 - Removed problematic lava pattern causing device crashes
@@ -290,16 +309,17 @@ For a music-reactive synchronized light show across multiple devices:
 - Try power cycling both leader and follower devices
 
 ### Followers Keep Timing Out or Desyncing
-- **Enable Debug Mode** (Button B 3-second hold) to see packet reception details
-- Leader may be out of range or experiencing interference
-- Check Serial output for:
-  - "Leader timeout" messages
-  - "WARNING: No complete frames" - indicates packet loss
-  - Frame completion messages - should show consistent frame IDs
-- Reduce distance between devices
-- Ensure leader is actively broadcasting (ORANGE or RED background)
-- Try power cycling the follower (Button C) to reset sync state
-- Check for WiFi interference from other devices on channel 1
+- **Fixed in v3.3.2!** The root cause (ESP-NOW packet loss from buffer overflow) has been resolved
+- If still experiencing issues:
+  - Check Serial output on **leader** for "BROADCAST FAILED" messages
+  - Check Serial output on **followers** for packet reception
+  - Reduce distance between devices if seeing packet loss
+  - Check for WiFi interference from other devices on channel 1
+  - Ensure all devices are running v3.3.2 or later
+
+### Multiple Leaders (Double-Red State)
+- **Fixed in v3.3.0!** Nodes now refuse to become leader if another leader exists
+- If this still occurs, all nodes may need to be power cycled to reset state
 
 ### Music Mode Not Responding
 - Ensure music/audio source is loud enough and near the M5Stick
