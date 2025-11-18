@@ -1,10 +1,15 @@
 /// @file    m5lights_v1_simple.ino
 /// @brief   Ultra-Simple ESP-NOW LED Sync with 12 Patterns + Music Mode
-/// @version 3.2.0
+/// @version 3.2.1
 /// @date    2024-10-26
 /// @author  John Cohn (adapted from Mark Kriegsman)
 ///
 /// @changelog
+/// v3.2.1 (2024-10-26) - Fixed Rejoin Logic Stuck State
+///   - CRITICAL FIX: Followers now immediately exit rejoin mode when receiving leader data
+///   - Prevents stuck state where followers stay green despite leader broadcasting
+///   - Increased incomplete frame timeout from 500ms to 2000ms (less aggressive)
+///   - Followers can now reconnect to leaders without requiring power cycle
 /// v3.2.0 (2024-10-26) - Added Incomplete Frame Detection & Auto-Recovery
 ///   - Followers now detect when receiving packets but not complete frames
 ///   - Auto-resync if no complete frame received within 500ms (packet loss)
@@ -68,7 +73,7 @@
 FASTLED_USING_NAMESPACE
 
 // Version info
-#define VERSION "3.2.0"
+#define VERSION "3.2.1"
 
 // Hardware config
 #define LED_PIN 32
@@ -157,7 +162,7 @@ unsigned long lastBroadcast = 0;
 #define BROADCAST_INTERVAL_MS 50
 #define LEADER_TIMEOUT_MS 8000  // Increased from 3s to 8s for robustness
 #define REJOIN_SCAN_INTERVAL_MS 15000  // Scan for leaders every 15 seconds
-#define COMPLETE_FRAME_TIMEOUT_MS 500  // Max time between complete frames before resync
+#define COMPLETE_FRAME_TIMEOUT_MS 2000  // Max time between complete frames before resync
 
 // Pattern function declarations
 void rainbow();
@@ -220,7 +225,14 @@ void onDataReceived(const esp_now_recv_info* recv_info, const uint8_t *incomingD
   // Update leader activity
   lastLeaderMessage = millis();
   leaderDataActive = true;
-  
+
+  // Exit rejoin mode immediately when receiving valid leader data
+  if (rejoinMode) {
+    rejoinMode = false;
+    rejoinAttempts = 0;
+    Serial.println("ESP-NOW: Leader detected - exiting rejoin mode");
+  }
+
   // Apply brightness from leader (for audio sync)
   FastLED.setBrightness(receivedData.brightness);
   
