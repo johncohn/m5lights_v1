@@ -210,7 +210,7 @@ const char* patternNames[] = {
 #define ARRAY_SIZE(A) (sizeof(A) / sizeof((A)[0]))
 
 // ESP-NOW callbacks
-void onDataSent(const wifi_tx_info_t *info, esp_now_send_status_t status) {
+void onDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
   if (status == ESP_NOW_SEND_SUCCESS) {
     Serial.println("ESP-NOW: Send OK");
   } else {
