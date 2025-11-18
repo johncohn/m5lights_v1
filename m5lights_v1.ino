@@ -1,10 +1,15 @@
 /// @file    m5lights_v1_simple.ino
 /// @brief   Ultra-Simple ESP-NOW LED Sync with 12 Patterns + Music Mode
-/// @version 3.3.0
+/// @version 3.3.1
 /// @date    2024-10-26
 /// @author  John Cohn (adapted from Mark Kriegsman)
 ///
 /// @changelog
+/// v3.3.1 (2024-10-26) - Added Leader Broadcast Debug Logging
+///   - Leader now logs broadcast activity (once per second summary)
+///   - Shows when broadcasts are skipped due to timing
+///   - Logs ESP-NOW send failures if they occur
+///   - Helps diagnose leader broadcast issues
 /// v3.3.0 (2024-10-26) - Added Leader Conflict Prevention & Enhanced Debug Logging
 ///   - CRITICAL: Nodes now refuse to become leader if another leader exists
 ///   - Prevents multiple simultaneous leaders (double-red state)
@@ -80,7 +85,7 @@
 FASTLED_USING_NAMESPACE
 
 // Version info
-#define VERSION "3.3.0"
+#define VERSION "3.3.1"
 
 // Hardware config
 #define LED_PIN 32
@@ -311,17 +316,35 @@ void setupESPNOW() {
 
 // Broadcast LED data (for leader modes)
 void broadcastLEDData() {
+  static unsigned long lastBroadcastLog = 0;
+  static uint32_t broadcastCount = 0;
+  unsigned long now = millis();
+
   const int LEDS_PER_PACKET = 49;  // Reduced by 1 to fit brightness byte
   static uint8_t sequenceNum = 0;
-  
+
   LEDSync message;
   message.sequenceNum = sequenceNum++;
-  
+
+  broadcastCount++;
+
+  // Log every 20th broadcast (once per second at 50ms intervals)
+  if (now - lastBroadcastLog > 1000) {
+    Serial.print("[LEADER TX] Broadcasting frame #");
+    Serial.print(broadcastCount);
+    Serial.print(", seq=");
+    Serial.println(message.sequenceNum);
+    lastBroadcastLog = now;
+  }
+
+  int successCount = 0;
+  int failCount = 0;
+
   for (int startIdx = 0; startIdx < NUM_LEDS; startIdx += LEDS_PER_PACKET) {
     message.startIndex = startIdx;
     message.count = min(LEDS_PER_PACKET, NUM_LEDS - startIdx);
     message.brightness = FastLED.getBrightness();  // Include current brightness
-    
+
     // Pack RGB data
     for (int i = 0; i < message.count; i++) {
       int ledIdx = startIdx + i;
@@ -330,8 +353,22 @@ void broadcastLEDData() {
       message.rgbData[dataIdx + 1] = leds[ledIdx].g;
       message.rgbData[dataIdx + 2] = leds[ledIdx].b;
     }
-    
-    esp_now_send(broadcastAddress, (uint8_t*)&message, sizeof(message));
+
+    esp_err_t result = esp_now_send(broadcastAddress, (uint8_t*)&message, sizeof(message));
+    if (result == ESP_OK) {
+      successCount++;
+    } else {
+      failCount++;
+    }
+  }
+
+  // Log if any packets failed
+  if (failCount > 0) {
+    Serial.print("!!! BROADCAST FAILED: ");
+    Serial.print(failCount);
+    Serial.print(" packets failed, ");
+    Serial.print(successCount);
+    Serial.println(" succeeded");
   }
 }
 
@@ -806,10 +843,18 @@ void loop() {
     gPatterns[gCurrentPatternNumber]();
 
     // If leader: broadcast FIRST, then wait for followers to receive/process, then show
-    if (currentMode == MODE_MUSIC_LEADER && (currentTime - lastBroadcast > BROADCAST_INTERVAL_MS)) {
-      broadcastLEDData();
-      lastBroadcast = currentTime;
-      delay(LEADER_DELAY_MS);  // Wait for followers to receive and process
+    if (currentMode == MODE_MUSIC_LEADER) {
+      static unsigned long lastSkipLog = 0;
+      if (currentTime - lastBroadcast > BROADCAST_INTERVAL_MS) {
+        broadcastLEDData();
+        lastBroadcast = currentTime;
+        delay(LEADER_DELAY_MS);  // Wait for followers to receive and process
+      } else if (currentTime - lastSkipLog > 5000) {
+        Serial.print("[LEADER] Skipping broadcast (too soon): ");
+        Serial.print(currentTime - lastBroadcast);
+        Serial.println("ms since last");
+        lastSkipLog = currentTime;
+      }
     }
 
     FastLED.show();
@@ -819,10 +864,18 @@ void loop() {
     gPatterns[gCurrentPatternNumber]();
 
     // If leader: broadcast FIRST, then wait for followers to receive/process, then show
-    if (currentMode == MODE_NORMAL_LEADER && (currentTime - lastBroadcast > BROADCAST_INTERVAL_MS)) {
-      broadcastLEDData();
-      lastBroadcast = currentTime;
-      delay(LEADER_DELAY_MS);  // Wait for followers to receive and process
+    if (currentMode == MODE_NORMAL_LEADER) {
+      static unsigned long lastSkipLog = 0;
+      if (currentTime - lastBroadcast > BROADCAST_INTERVAL_MS) {
+        broadcastLEDData();
+        lastBroadcast = currentTime;
+        delay(LEADER_DELAY_MS);  // Wait for followers to receive and process
+      } else if (currentTime - lastSkipLog > 5000) {
+        Serial.print("[LEADER] Skipping broadcast (too soon): ");
+        Serial.print(currentTime - lastBroadcast);
+        Serial.println("ms since last");
+        lastSkipLog = currentTime;
+      }
     }
 
     FastLED.show();
