@@ -1,0 +1,1207 @@
+/// @file    m5lights_v1_simple.ino
+/// @brief   Ultra-Simple ESP-NOW LED Sync with 12 Patterns + Music Mode
+/// @version 3.2.1
+/// @date    2024-10-26
+/// @author  John Cohn (adapted from Mark Kriegsman)
+///
+/// @changelog
+/// v3.2.0 (2024-10-26) - Fixed Synchronization Bug
+///   - Added frame ID tracking to prevent partial frame rendering
+///   - Implemented packet completion detection before FastLED.show()
+///   - Added fallback FastLED.show() in main loop for followers
+///   - Enhanced debugging output for packet loss detection
+///   - Fixed intermittent follower desync issues
+/// v3.0.0 (2024-10-26) - Clean Ultra-Simple ESP-NOW Implementation
+///   - Complete rewrite with simple 4-mode system
+///   - Normal, Music, Normal Leader, Music Leader modes
+///   - Button: Short press = Normal↔Music, Long press = Become Leader
+///   - Direct LED data sync (153 bytes per packet, 50 LEDs)
+///   - Zero processing delay on followers
+///   - All 12 patterns from v2.6 + working music system
+///   - High contrast music mode (2-96 brightness range)
+
+#include <M5StickCPlus2.h>
+#include <FastLED.h>
+#include <esp_now.h>
+#include <WiFi.h>
+#include <esp_system.h>
+#include <esp_task_wdt.h>
+#include <esp_wifi.h>
+
+FASTLED_USING_NAMESPACE
+
+// Version info
+#define VERSION "3.2.1"
+
+// Hardware config
+#define LED_PIN 32
+#define NUM_LEDS 100  // Reduced from 200 for M5Stick 5V power stability
+#define BRIGHTNESS 16  // Reduced further to limit current draw from M5Stick
+#define COLOR_ORDER GRB
+#define CHIPSET WS2811
+
+CRGB leds[NUM_LEDS];
+
+// Ultra-Simple Mode System  
+enum NodeMode {
+  MODE_NORMAL,        // Standalone normal patterns, no sync
+  MODE_MUSIC,         // Standalone music-reactive patterns, no sync  
+  MODE_NORMAL_LEADER, // Normal patterns + broadcast LED data
+  MODE_MUSIC_LEADER   // Music patterns + broadcast LED data
+};
+
+// Simple LED data sync message
+struct LEDSync {
+  uint8_t frameID;         // Frame identifier to track complete frames
+  uint8_t startIndex;      // LED start position (0-199)
+  uint8_t count;           // Number of LEDs in this packet (1-50)
+  uint8_t totalPackets;    // Total packets in this frame
+  uint8_t packetIndex;     // This packet's index (0 to totalPackets-1)
+  uint8_t brightness;      // Current brightness (for audio sync)
+  uint8_t rgbData[147];    // RGB data (max 49 LEDs = 147 bytes)
+};
+
+// Global variables
+NodeMode currentMode = MODE_NORMAL;
+unsigned long lastModeSwitch = 0;
+bool leaderDataActive = false;
+unsigned long lastLeaderMessage = 0;
+uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+
+// Frame synchronization tracking
+uint8_t currentFrameID = 0;
+uint8_t lastReceivedFrameID = 255;
+uint8_t expectedPackets = 0;
+bool packetReceived[10];  // Track up to 10 packets per frame
+unsigned long lastFrameComplete = 0;
+unsigned long lastShowCall = 0;
+
+// Pattern globals
+uint8_t gCurrentPatternNumber = 0;
+uint8_t gHue = 0;
+
+// Audio system variables (from working v2.6 implementation)
+float soundMin = 1.0f;
+float soundMax = 0.0f;
+float musicLevel = 0.0f;
+float audioLevel = 0.0f;
+bool beatDetected = false;
+bool prevAbove = false;
+uint32_t beatTimes[50];
+uint8_t beatCount = 0;
+uint32_t lastBpmMillis = 0;
+bool audioDetected = true;
+uint8_t musicBrightness = BRIGHTNESS;
+
+// Adaptive audio scaling
+float noiseFloor = 0.01f;          // Moving average of quiet ambient sound
+float peakLevel = 0.1f;            // Moving average of loud sound peaks
+float noiseFloorSmooth = 0.998f;   // Slow adaptation for noise floor
+float peakLevelSmooth = 0.99f;     // Faster adaptation for peaks
+
+// Pattern control
+bool autoAdvancePatterns = true;   // Whether patterns auto-advance
+unsigned long lastPatternChange = 0;
+
+// Debug mode control
+bool debugMode = false;  // Toggle debug serial output
+
+// ESP-NOW rejoin logic
+unsigned long lastRejoinScan = 0;
+bool rejoinMode = false;
+uint8_t rejoinAttempts = 0;
+
+// Audio configuration
+static constexpr size_t MIC_BUF_LEN = 240;
+static constexpr int MIC_SR = 44100;
+static constexpr float SMOOTH = 0.995f;
+static constexpr uint32_t BPM_WINDOW = 5000;
+
+// Button handling
+volatile bool buttonStateChanged = false;
+volatile bool buttonCurrentState = false;
+volatile unsigned long buttonLastInterrupt = 0;
+unsigned long lastDisplayUpdate = 0;
+unsigned long lastBroadcast = 0;
+
+// Timing constants
+#define LONG_PRESS_TIME_MS 1500
+#define BROADCAST_INTERVAL_MS 50
+#define LEADER_TIMEOUT_MS 8000  // Increased from 3s to 8s for robustness
+#define REJOIN_SCAN_INTERVAL_MS 15000  // Scan for leaders every 15 seconds
+
+// Pattern function declarations
+void rainbow();
+void doChase();
+void juggle();
+void rainbowWithGlitter();
+void confetti();
+void bpm();
+void fire();
+void lightningStorm();
+void plasmaField();
+void meteorShower();
+void auroraWaves();
+void lavaFlow();
+
+// Pattern list and names
+typedef void (*SimplePatternList[])();
+SimplePatternList gPatterns = { 
+  rainbow, doChase, juggle, rainbowWithGlitter, confetti, bpm,
+  fire, lightningStorm, plasmaField, meteorShower, auroraWaves
+};
+
+const char* patternNames[] = {
+  "Rainbow", "Chase", "Juggle", "Rainbow+Glitter", "Confetti", "BPM",
+  "Fire", "Lightning", "Plasma", "Meteors", "Aurora"
+};
+
+#define ARRAY_SIZE(A) (sizeof(A) / sizeof((A)[0]))
+
+// ESP-NOW callbacks
+void onDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
+  // Removed debug spam - this gets called too often
+  static unsigned long lastSendReport = 0;
+  static int sendCount = 0;
+  static int failCount = 0;
+
+  if (status == ESP_NOW_SEND_SUCCESS) {
+    sendCount++;
+  } else {
+    failCount++;
+    Serial.println("ESP-NOW: Send FAILED!");
+  }
+
+  // Report every 5 seconds instead of every packet
+  if (debugMode && millis() - lastSendReport > 5000) {
+    Serial.print("ESP-NOW: ");
+    Serial.print(sendCount);
+    Serial.print(" sent, ");
+    Serial.print(failCount);
+    Serial.println(" failed");
+    sendCount = 0;
+    failCount = 0;
+    lastSendReport = millis();
+  }
+}
+
+void onDataReceived(const esp_now_recv_info* recv_info, const uint8_t *incomingData, int len) {
+  // Only process if we're a follower (not a leader)
+  if (currentMode == MODE_NORMAL_LEADER || currentMode == MODE_MUSIC_LEADER) {
+    return;
+  }
+
+  // Verify message size
+  if (len != sizeof(LEDSync)) {
+    if (debugMode) {
+      Serial.print("ESP-NOW: Wrong size, expected ");
+      Serial.print(sizeof(LEDSync));
+      Serial.print(", got ");
+      Serial.println(len);
+    }
+    return;
+  }
+
+  LEDSync receivedData;
+  memcpy(&receivedData, incomingData, sizeof(receivedData));
+
+  // Update leader activity
+  lastLeaderMessage = millis();
+  leaderDataActive = true;
+
+  // Check if this is a new frame
+  if (receivedData.frameID != lastReceivedFrameID) {
+    // New frame started - reset tracking
+    lastReceivedFrameID = receivedData.frameID;
+    expectedPackets = receivedData.totalPackets;
+    for (int i = 0; i < 10; i++) {
+      packetReceived[i] = false;
+    }
+    if (debugMode) {
+      Serial.print("New frame: ");
+      Serial.print(receivedData.frameID);
+      Serial.print(", expecting ");
+      Serial.print(receivedData.totalPackets);
+      Serial.println(" packets");
+    }
+  }
+
+  // Apply brightness from leader (for audio sync)
+  FastLED.setBrightness(receivedData.brightness);
+
+  // Apply LED data directly
+  for (int i = 0; i < receivedData.count && i < 49; i++) {
+    int ledIndex = receivedData.startIndex + i;
+    if (ledIndex < NUM_LEDS) {
+      int dataIndex = i * 3;
+      leds[ledIndex].r = receivedData.rgbData[dataIndex];
+      leds[ledIndex].g = receivedData.rgbData[dataIndex + 1];
+      leds[ledIndex].b = receivedData.rgbData[dataIndex + 2];
+    }
+  }
+
+  // Mark this packet as received
+  if (receivedData.packetIndex < 10) {
+    packetReceived[receivedData.packetIndex] = true;
+  }
+
+  // Check if we've received all packets for this frame
+  bool frameComplete = true;
+  for (int i = 0; i < receivedData.totalPackets && i < 10; i++) {
+    if (!packetReceived[i]) {
+      frameComplete = false;
+      break;
+    }
+  }
+
+  // Only show LEDs when we have a complete frame
+  if (frameComplete) {
+    FastLED.show();
+    lastFrameComplete = millis();
+    lastShowCall = millis();
+    if (debugMode) {
+      Serial.print("Frame ");
+      Serial.print(receivedData.frameID);
+      Serial.println(" complete - showing");
+    }
+  }
+}
+
+// ESP-NOW setup
+void setupESPNOW() {
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
+  esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
+  
+  if (esp_now_init() != ESP_OK) {
+    Serial.println("ESP-NOW init failed");
+    return;
+  }
+  
+  esp_now_register_send_cb(onDataSent);
+  esp_now_register_recv_cb(onDataReceived);
+  
+  esp_now_peer_info_t peerInfo = {};
+  memcpy(peerInfo.peer_addr, broadcastAddress, 6);
+  peerInfo.channel = 1;
+  peerInfo.encrypt = false;
+  peerInfo.ifidx = WIFI_IF_STA;
+  
+  if (esp_now_add_peer(&peerInfo) != ESP_OK) {
+    Serial.println("ESP-NOW peer add failed");
+  } else {
+    Serial.println("ESP-NOW setup complete");
+  }
+}
+
+// Broadcast LED data (for leader modes)
+void broadcastLEDData() {
+  const int LEDS_PER_PACKET = 49;
+  static uint8_t frameID = 0;
+
+  // Calculate total packets needed
+  int totalPackets = (NUM_LEDS + LEDS_PER_PACKET - 1) / LEDS_PER_PACKET;
+
+  // Increment frame ID for this broadcast
+  frameID++;
+
+  LEDSync message;
+  message.frameID = frameID;
+  message.totalPackets = totalPackets;
+  message.brightness = FastLED.getBrightness();
+
+  int packetIndex = 0;
+  for (int startIdx = 0; startIdx < NUM_LEDS; startIdx += LEDS_PER_PACKET) {
+    message.startIndex = startIdx;
+    message.count = min(LEDS_PER_PACKET, NUM_LEDS - startIdx);
+    message.packetIndex = packetIndex++;
+
+    // Pack RGB data
+    for (int i = 0; i < message.count; i++) {
+      int ledIdx = startIdx + i;
+      int dataIdx = i * 3;
+      message.rgbData[dataIdx] = leds[ledIdx].r;
+      message.rgbData[dataIdx + 1] = leds[ledIdx].g;
+      message.rgbData[dataIdx + 2] = leds[ledIdx].b;
+    }
+
+    // Send packet and check for errors
+    esp_err_t result = esp_now_send(broadcastAddress, (uint8_t*)&message, sizeof(message));
+    if (result != ESP_OK) {
+      Serial.print("ESP-NOW send error: ");
+      Serial.println(result);
+      return; // Abort this broadcast on error
+    }
+
+    // Increased delay between packets to prevent queue overflow
+    delay(3); // Changed from 500μs to 3ms to prevent crashes
+    yield(); // Let other tasks run
+  }
+}
+
+// Audio system (working implementation from v2.6)
+void initAudio() {
+  M5.Mic.begin(); 
+  M5.Mic.setSampleRate(MIC_SR);
+  lastBpmMillis = millis();
+  Serial.println("Audio initialized");
+}
+
+void detectAudioFrame() {
+  static int16_t micBuf[MIC_BUF_LEN];
+  if (!M5.Mic.record(micBuf, MIC_BUF_LEN)) return;
+  
+  long sum = 0; 
+  for (auto &v : micBuf) sum += abs(v);
+  float raw = float(sum) / MIC_BUF_LEN / 32767.0f;
+  
+  soundMin = min(raw, SMOOTH * soundMin + (1 - SMOOTH) * raw);
+  soundMax = max(raw, SMOOTH * soundMax + (1 - SMOOTH) * raw);
+  
+  // Adaptive sensitivity
+  float dynamicRange = soundMax - soundMin;
+  const float MIN_DYNAMIC_RANGE = 0.08f;
+  const float HIGH_VOLUME_THRESHOLD = 0.7f;
+  
+  float adaptedMin = soundMin;
+  float adaptedMax = soundMax;
+  float beatThreshold = 0.6f;
+  
+  bool highVolumeEnvironment = (soundMin > HIGH_VOLUME_THRESHOLD) || (dynamicRange < MIN_DYNAMIC_RANGE);
+  
+  if (highVolumeEnvironment) {
+    if (dynamicRange < MIN_DYNAMIC_RANGE) {
+      float expansion = (MIN_DYNAMIC_RANGE - dynamicRange) * 0.5f;
+      adaptedMin = max(0.0f, soundMin - expansion);
+      adaptedMax = min(1.0f, soundMax + expansion);
+    }
+    beatThreshold = 0.35f;
+  }
+  
+  musicLevel = constrain((raw - adaptedMin) / (adaptedMax - adaptedMin + 1e-6f), 0.0f, 1.0f);
+  audioLevel = musicLevel;
+  
+  bool above = (musicLevel > beatThreshold);
+  if (above && !prevAbove) {
+    uint32_t t = millis();
+    if (beatCount < 50) {
+      beatTimes[beatCount++] = t;
+    } else { 
+      memmove(beatTimes, beatTimes + 1, 49 * sizeof(uint32_t)); 
+      beatTimes[49] = t; 
+    }
+    beatDetected = true;
+  } else if (!above) {
+    beatDetected = false;
+  }
+  prevAbove = above;
+}
+
+void updateBPM() {
+  uint32_t now = millis();
+  if (now - lastBpmMillis >= BPM_WINDOW) {
+    int cnt = 0; 
+    uint32_t cutoff = now - BPM_WINDOW;
+    for (int i = 0; i < beatCount; i++) {
+      if (beatTimes[i] >= cutoff) cnt++;
+    }
+    
+    float bpm = cnt * (60000.0f / float(BPM_WINDOW));
+    audioDetected = (cnt >= 4 && bpm >= 30.0f && bpm <= 300.0f);
+    lastBpmMillis += BPM_WINDOW; 
+    beatCount = 0;
+  }
+}
+
+void updateAudioLevel() {
+  detectAudioFrame();
+  updateBPM();
+  
+  // Adaptive noise floor and peak tracking
+  if (audioLevel < noiseFloor || noiseFloor == 0.01f) {
+    noiseFloor = noiseFloor * noiseFloorSmooth + audioLevel * (1.0f - noiseFloorSmooth);
+  }
+  
+  if (audioLevel > peakLevel) {
+    peakLevel = peakLevel * peakLevelSmooth + audioLevel * (1.0f - peakLevelSmooth);
+  }
+  
+  // Ensure we have a reasonable dynamic range
+  float dynamicRange = peakLevel - noiseFloor;
+  if (dynamicRange < 0.02f) {
+    dynamicRange = 0.02f;  // Minimum range to prevent division by zero
+  }
+  
+  // Map audio level from [noiseFloor, peakLevel] to [1, 96] brightness
+  float normalizedLevel = (audioLevel - noiseFloor) / dynamicRange;
+  normalizedLevel = constrain(normalizedLevel, 0.0f, 1.0f);
+  
+  // Reduced contrast for M5Stick power stability: 1 (barely on) to 64
+  uint8_t minBrightness = 1;
+  uint8_t maxBrightness = 64;  // Reduced from 96 to limit current draw
+  
+  musicBrightness = minBrightness + (uint8_t)(normalizedLevel * (maxBrightness - minBrightness));
+  FastLED.setBrightness(musicBrightness);
+}
+
+// Button interrupt handler
+void IRAM_ATTR buttonInterrupt() {
+  unsigned long currentTime = millis();
+  if (currentTime - buttonLastInterrupt > 50) {
+    buttonCurrentState = digitalRead(37);
+    buttonStateChanged = true;
+    buttonLastInterrupt = currentTime;
+  }
+}
+
+void setupButtonInterrupt() {
+  pinMode(37, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(37), buttonInterrupt, CHANGE);
+}
+
+// Mode switching functions
+void switchToNormalMode() {
+  currentMode = MODE_NORMAL;
+  lastModeSwitch = millis();
+  leaderDataActive = false;
+  if (debugMode) Serial.println("*** NORMAL MODE ***");
+}
+
+void switchToMusicMode() {
+  currentMode = MODE_MUSIC;
+  lastModeSwitch = millis();
+  leaderDataActive = false;
+  if (debugMode) Serial.println("*** MUSIC MODE ***");
+}
+
+void switchToNormalLeaderMode() {
+  currentMode = MODE_NORMAL_LEADER;
+  lastModeSwitch = millis();
+  leaderDataActive = false;
+  if (debugMode) Serial.println("*** NORMAL LEADER MODE ***");
+}
+
+void switchToMusicLeaderMode() {
+  currentMode = MODE_MUSIC_LEADER;
+  lastModeSwitch = millis();
+  leaderDataActive = false;
+  if (debugMode) Serial.println("*** MUSIC LEADER MODE ***");
+}
+
+// Button handling
+void handleButtons() {
+  static enum { BTN_IDLE, BTN_PRESSED, BTN_LONG_TRIGGERED, BTN_COOLDOWN } buttonState = BTN_IDLE;
+  static unsigned long buttonPressTime = 0;
+  static unsigned long lastAction = 0;
+  
+  unsigned long now = millis();
+  bool currentPressed = !digitalRead(37);
+  
+  if (now - lastAction < 50) return;
+  
+  switch (buttonState) {
+    case BTN_IDLE:
+      if (currentPressed) {
+        buttonState = BTN_PRESSED;
+        buttonPressTime = now;
+        lastAction = now;
+      }
+      break;
+      
+    case BTN_PRESSED:
+      if (!currentPressed) {
+        // Short press: Toggle Normal ↔ Music (preserve leader state)
+        if (debugMode) {
+          Serial.print("Short press from mode: ");
+          Serial.println(currentMode);
+        }
+        if (currentMode == MODE_NORMAL) {
+          if (debugMode) Serial.println("Switching NORMAL -> MUSIC");
+          switchToMusicMode();
+        } else if (currentMode == MODE_MUSIC) {
+          if (debugMode) Serial.println("Switching MUSIC -> NORMAL");
+          switchToNormalMode();
+        } else if (currentMode == MODE_NORMAL_LEADER) {
+          if (debugMode) Serial.println("Switching NORMAL_LEADER -> MUSIC_LEADER");
+          switchToMusicLeaderMode();
+        } else if (currentMode == MODE_MUSIC_LEADER) {
+          if (debugMode) Serial.println("Switching MUSIC_LEADER -> NORMAL_LEADER");
+          switchToNormalLeaderMode();
+        }
+        buttonState = BTN_COOLDOWN;
+        lastAction = now;
+
+      } else if (now - buttonPressTime >= LONG_PRESS_TIME_MS) {
+        // Long press: Toggle leader status of current mode
+        if (debugMode) {
+          Serial.print("Long press from mode: ");
+          Serial.println(currentMode);
+        }
+        if (currentMode == MODE_NORMAL) {
+          if (debugMode) Serial.println("Switching NORMAL -> NORMAL_LEADER");
+          switchToNormalLeaderMode();
+        } else if (currentMode == MODE_MUSIC) {
+          if (debugMode) Serial.println("Switching MUSIC -> MUSIC_LEADER");
+          switchToMusicLeaderMode();
+        } else if (currentMode == MODE_NORMAL_LEADER) {
+          if (debugMode) Serial.println("Switching NORMAL_LEADER -> NORMAL");
+          switchToNormalMode();
+        } else if (currentMode == MODE_MUSIC_LEADER) {
+          if (debugMode) Serial.println("Switching MUSIC_LEADER -> MUSIC");
+          switchToMusicMode();
+        }
+        buttonState = BTN_LONG_TRIGGERED;
+        lastAction = now;
+      }
+      break;
+      
+    case BTN_LONG_TRIGGERED:
+      if (!currentPressed) {
+        buttonState = BTN_COOLDOWN;
+        lastAction = now;
+      }
+      break;
+      
+    case BTN_COOLDOWN:
+      if (!currentPressed && now - lastAction > 300) {
+        buttonState = BTN_IDLE;
+      }
+      break;
+  }
+}
+
+// B Button handling for pattern control and debug mode
+void handlePatternButtons() {
+  static unsigned long bBtnPressTime = 0;
+  static bool bBtnWasPressed = false;
+  static bool bLongHandled = false;
+  static bool superLongHandled = false;
+  static unsigned long lastDebugToggle = 0;
+
+  bool bBtnPressed = M5.BtnB.isPressed();
+
+  if (bBtnPressed && !bBtnWasPressed) {
+    // B button just pressed
+    bBtnPressTime = millis();
+    bLongHandled = false;
+    superLongHandled = false;
+    Serial.println("Button B pressed");
+  } else if (!bBtnPressed && bBtnWasPressed) {
+    // B button just released
+    unsigned long pressDuration = millis() - bBtnPressTime;
+    Serial.print("Button B released after ");
+    Serial.print(pressDuration);
+    Serial.println("ms");
+
+    // Only allow pattern control when not following (not in blue mode)
+    bool isFollower = leaderDataActive && (currentMode == MODE_NORMAL || currentMode == MODE_MUSIC);
+
+    if (!superLongHandled && !bLongHandled && pressDuration < 1000 && !isFollower) {
+      // Short press: advance to next pattern (disabled in follower mode)
+      nextPattern();
+      lastPatternChange = millis(); // Reset auto-advance timer
+      Serial.print("Manual pattern change to: ");
+      Serial.println(gCurrentPatternNumber);
+    }
+  } else if (bBtnPressed && !superLongHandled && (millis() - bBtnPressTime >= 3000)) {
+    // Super long press (3s): toggle debug mode
+    if (millis() - lastDebugToggle > 1000) {  // Debounce
+      debugMode = !debugMode;
+      superLongHandled = true;
+      lastDebugToggle = millis();
+      Serial.println("=====================================");
+      Serial.print("DEBUG MODE: ");
+      Serial.println(debugMode ? "ENABLED" : "DISABLED");
+      Serial.println("=====================================");
+
+      // Flash LEDs to confirm - save current pattern first
+      FastLED.clear();
+      for (int i = 0; i < 3; i++) {
+        fill_solid(leds, NUM_LEDS, debugMode ? CRGB::Green : CRGB::Red);
+        FastLED.show();
+        delay(150);
+        FastLED.clear();
+        FastLED.show();
+        delay(150);
+      }
+    }
+  } else if (bBtnPressed && !superLongHandled && !bLongHandled && (millis() - bBtnPressTime >= 1000)) {
+    // Long press (1s): toggle auto-advance - DISABLED to avoid conflict
+    // This was interfering with the 3s debug toggle
+    // Removed to make debug toggle more reliable
+  }
+
+  bBtnWasPressed = bBtnPressed;
+}
+
+// Display update
+void updateDisplay() {
+  uint16_t backgroundColor;
+  uint16_t textColor = WHITE;
+  
+  // Check if we're following (receiving leader data)
+  if (leaderDataActive && (currentMode == MODE_NORMAL || currentMode == MODE_MUSIC)) {
+    backgroundColor = BLUE;  // Blue background when following
+    textColor = WHITE;
+  } else {
+    switch (currentMode) {
+      case MODE_NORMAL:
+        backgroundColor = GREEN;
+        textColor = BLACK;
+        break;
+      case MODE_MUSIC:
+        backgroundColor = PURPLE;
+        textColor = WHITE;
+        break;
+      case MODE_NORMAL_LEADER:
+        backgroundColor = ORANGE;
+        textColor = BLACK;
+        break;
+      case MODE_MUSIC_LEADER:
+        backgroundColor = RED;
+        textColor = WHITE;
+        break;
+      default:
+        backgroundColor = BLACK;
+        break;
+    }
+  }
+  
+  M5.Display.fillScreen(backgroundColor);
+  M5.Display.setTextColor(textColor);
+  M5.Display.setTextSize(1);
+  
+  M5.Display.drawString("Simple Sync", 10, 10);
+  M5.Display.drawString("v" + String(VERSION), 10, 20);
+  
+  String modeStr = "";
+  switch (currentMode) {
+    case MODE_NORMAL: modeStr = "NORMAL"; break;
+    case MODE_MUSIC: modeStr = "MUSIC"; break;
+    case MODE_NORMAL_LEADER: modeStr = "NORM LEAD"; break;
+    case MODE_MUSIC_LEADER: modeStr = "MUSIC LEAD"; break;
+  }
+  M5.Display.drawString("Mode: " + modeStr, 10, 35);
+  
+  // Pattern info
+  if (leaderDataActive && (currentMode == MODE_NORMAL || currentMode == MODE_MUSIC)) {
+    M5.Display.drawString("Following...", 10, 50);
+  } else if (currentMode == MODE_MUSIC || currentMode == MODE_MUSIC_LEADER) {
+    String patternDisplay = String(gCurrentPatternNumber) + ": " + String(patternNames[gCurrentPatternNumber]);
+    M5.Display.drawString(patternDisplay, 10, 50);
+    M5.Display.drawString("Audio: " + String((int)(audioLevel * 100)) + "%", 10, 65);
+    M5.Display.drawString("Beat: " + String(beatDetected ? "YES" : "NO"), 10, 80);
+  } else {
+    String patternDisplay = String(gCurrentPatternNumber) + ": " + String(patternNames[gCurrentPatternNumber]);
+    M5.Display.drawString(patternDisplay, 10, 50);
+  }
+}
+
+void nextPattern() {
+  gCurrentPatternNumber = (gCurrentPatternNumber + 1) % ARRAY_SIZE(gPatterns);
+}
+
+// Enhanced leader timeout with rejoin logic
+void checkLeaderTimeout() {
+  unsigned long now = millis();
+  
+  if (leaderDataActive && (now - lastLeaderMessage > LEADER_TIMEOUT_MS)) {
+    leaderDataActive = false;
+    rejoinMode = true;
+    rejoinAttempts = 0;
+    lastRejoinScan = now;
+    if (debugMode) Serial.println("Leader timeout - entering rejoin mode");
+  }
+
+  // Active rejoin scanning for dropped followers
+  if (rejoinMode && (now - lastRejoinScan > REJOIN_SCAN_INTERVAL_MS)) {
+    if (rejoinAttempts < 5) {  // Try 5 times before giving up
+      if (debugMode) {
+        Serial.print("Rejoin attempt ");
+        Serial.println(rejoinAttempts + 1);
+      }
+
+      // Reset ESP-NOW to try reconnecting
+      esp_now_deinit();
+      delay(100);
+      setupESPNOW();
+
+      rejoinAttempts++;
+      lastRejoinScan = now;
+
+      if (rejoinAttempts >= 5) {
+        rejoinMode = false;
+        if (debugMode) Serial.println("Rejoin attempts exhausted - staying standalone");
+      }
+    }
+  }
+}
+
+void setup() {
+  // Initialize Serial FIRST for debugging
+  Serial.begin(115200);
+  delay(500);
+  Serial.println("\n\n=== M5 Lights v3.2.0 STARTING ===");
+
+  // Initialize M5StickC Plus 2
+  auto cfg = M5.config();
+  M5.begin(cfg);
+  M5.Display.setRotation(1);
+  M5.Display.fillScreen(BLACK);
+  M5.Display.setTextColor(WHITE);
+  M5.Display.setTextSize(1);
+
+  delay(500);
+  
+  // Initialize watchdog timer (60 second timeout - increased for stability)
+  Serial.println("Initializing watchdog...");
+  esp_task_wdt_config_t wdt_config = {
+    .timeout_ms = 60000,  // Increased from 30s to 60s
+    .idle_core_mask = (1 << portNUM_PROCESSORS) - 1,
+    .trigger_panic = false  // Changed to false - don't panic, just reset
+  };
+  esp_task_wdt_init(&wdt_config);
+  esp_task_wdt_add(NULL);
+  Serial.println("Watchdog initialized");
+  
+  setupButtonInterrupt();
+  initAudio();
+  setupESPNOW();
+  
+  // Initialize FastLED
+  FastLED.addLeds<CHIPSET, LED_PIN, COLOR_ORDER>(leds, NUM_LEDS).setCorrection(TypicalLEDStrip);
+  FastLED.setBrightness(BRIGHTNESS);
+  
+  randomSeed(micros());
+  fill_solid(leds, NUM_LEDS, CRGB::Black);
+  FastLED.show();
+  
+  // Initialize pattern timing
+  lastPatternChange = millis();
+  
+  updateDisplay();
+
+  Serial.println("=====================================");
+  Serial.println("Simple LED Sync v" + String(VERSION) + " READY!");
+  Serial.print("Free heap: ");
+  Serial.println(ESP.getFreeHeap());
+  Serial.println("Button A - Short: Normal ↔ Music");
+  Serial.println("Button A - Long: Toggle Leader");
+  Serial.println("Button B - Short: Next Pattern");
+  Serial.println("Button B - 3s: Toggle Debug Mode");
+  Serial.println("DEBUG MODE: " + String(debugMode ? "ENABLED" : "DISABLED"));
+  Serial.println("=====================================");
+}
+
+void loop() {
+  // Reset watchdog timer
+  esp_task_wdt_reset();
+
+  // Catch any exceptions and report them
+  static unsigned long lastLoopTime = 0;
+  static int loopCount = 0;
+  loopCount++;
+
+  if (millis() - lastLoopTime > 5000) {
+    Serial.print("Loop running, count: ");
+    Serial.print(loopCount);
+    Serial.print(", Free heap: ");
+    Serial.println(ESP.getFreeHeap());
+    lastLoopTime = millis();
+    loopCount = 0;
+  }
+
+  M5.update();
+  handleButtons();
+  handlePatternButtons();
+  
+  unsigned long currentTime = millis();
+  
+  // Check for leader timeout
+  checkLeaderTimeout();
+  
+  // If we're following a leader, don't run our own patterns
+  if (leaderDataActive && (currentMode == MODE_NORMAL || currentMode == MODE_MUSIC)) {
+    // Fallback: Show LEDs periodically even if we haven't received a complete frame
+    // This prevents total LED freeze if packets are being missed
+    if (currentTime - lastShowCall > 100) {  // Max 100ms between shows
+      FastLED.show();
+      lastShowCall = currentTime;
+    }
+
+    // Warn if we haven't received a complete frame in a while
+    if (currentTime - lastFrameComplete > 500) {
+      static unsigned long lastWarning = 0;
+      if (currentTime - lastWarning > 2000) {
+        Serial.println("WARNING: No complete frames in 500ms - possible packet loss");
+        lastWarning = currentTime;
+      }
+    }
+
+    // Just update display and return - LEDs controlled by leader
+    if (currentTime - lastDisplayUpdate > 200) {
+      updateDisplay();
+      lastDisplayUpdate = currentTime;
+    }
+    return;
+  }
+  
+  // Run patterns based on mode
+  if (currentMode == MODE_MUSIC || currentMode == MODE_MUSIC_LEADER) {
+    // Music mode - update audio and run pattern
+    if (debugMode) Serial.println("Updating audio...");
+    updateAudioLevel();
+    if (debugMode) Serial.println("Running pattern...");
+    gPatterns[gCurrentPatternNumber]();
+    if (debugMode) Serial.println("Showing LEDs...");
+    FastLED.show();
+    if (debugMode) Serial.println("Pattern complete");
+  } else {
+    // Normal mode - just run pattern
+    FastLED.setBrightness(BRIGHTNESS);
+    gPatterns[gCurrentPatternNumber]();
+    FastLED.show();
+  }
+  
+  // Broadcast LED data if we're a leader
+  if ((currentMode == MODE_NORMAL_LEADER || currentMode == MODE_MUSIC_LEADER) &&
+      (currentTime - lastBroadcast > BROADCAST_INTERVAL_MS)) {
+    if (debugMode) Serial.println("Broadcasting LED data...");
+    unsigned long broadcastStart = millis();
+    broadcastLEDData();
+    unsigned long broadcastTime = millis() - broadcastStart;
+    if (debugMode) {
+      Serial.print("Broadcast took ");
+      Serial.print(broadcastTime);
+      Serial.println("ms");
+    }
+    if (broadcastTime > 100) {
+      Serial.print("WARNING: Broadcast took ");
+      Serial.print(broadcastTime);
+      Serial.println("ms - too slow!");
+    }
+    lastBroadcast = currentTime;
+  }
+  
+  // Update display periodically
+  if (currentTime - lastDisplayUpdate > 200) {
+    updateDisplay();
+    lastDisplayUpdate = currentTime;
+  }
+  
+  // Auto-advance patterns every 15 seconds in all modes (if enabled)
+  if (autoAdvancePatterns && currentTime - lastPatternChange > 15000) {
+    if (debugMode) Serial.println("Auto-advancing pattern...");
+    nextPattern();
+    lastPatternChange = currentTime;
+  }
+  
+  // Increment hue for patterns
+  EVERY_N_MILLISECONDS(20) { gHue++; }
+  
+  yield();
+}
+
+// ===== PATTERN IMPLEMENTATIONS =====
+// All 12 patterns from v2.6
+
+void rainbow() {
+  fill_rainbow(leds, NUM_LEDS, gHue, 7);
+}
+
+void rainbowWithGlitter() {
+  rainbow();
+  if (random8() < 80) {
+    leds[random16(NUM_LEDS)] += CRGB::White;
+  }
+}
+
+void confetti() {
+  fadeToBlackBy(leds, NUM_LEDS, 10);
+  int pos = random16(NUM_LEDS);
+  leds[pos] += CHSV(gHue + random8(64), 200, 255);
+}
+
+void sinelon() {
+  fadeToBlackBy(leds, NUM_LEDS, 20);
+  int pos = beatsin16(13, 0, NUM_LEDS - 1);
+  leds[pos] += CHSV(gHue, 255, 192);
+}
+
+void juggle() {
+  fadeToBlackBy(leds, NUM_LEDS, 20);
+  uint8_t dothue = 0;
+  for (int i = 0; i < 8; i++) {
+    leds[beatsin16(i + 7, 0, NUM_LEDS - 1)] |= CHSV(dothue, 200, 255);
+    dothue += 32;
+  }
+}
+
+void bpm() {
+  uint8_t BeatsPerMinute = 62;
+  CRGBPalette16 palette = PartyColors_p;
+  uint8_t beat = beatsin8(BeatsPerMinute, 64, 255);
+  for (int i = 0; i < NUM_LEDS; i++) {
+    leds[i] = ColorFromPalette(palette, gHue + (i * 2), beat - gHue + (i * 10));
+  }
+}
+
+void doChase() {
+  static uint32_t last = 0;
+  static uint16_t pos = 0;
+  static uint8_t hue = 0;
+  uint32_t now = millis();
+  if (now - last < 100) return;
+  last = now;
+  pos = (pos + 1) % NUM_LEDS;
+  fadeToBlackBy(leds, NUM_LEDS, 50);
+  for (int i = 0; i < NUM_LEDS; i += 20) {
+    for (int t = 0; t < 10; t++) {
+      int idx = (pos + i + NUM_LEDS - t) % NUM_LEDS;
+      leds[idx] |= CHSV(hue + i, 255, map(t, 0, 9, 255, 50));
+    }
+  }
+  hue++;
+}
+
+void fire() {
+  static uint8_t heat[NUM_LEDS/2];
+  int half = NUM_LEDS/2;
+  uint8_t cooling = 55;
+  uint8_t sparking = 120;
+  
+  for (int i = 0; i < half; i++) {
+    heat[i] = qsub8(heat[i], random8(0, ((cooling * 10) / half) + 2));
+  }
+  
+  for (int k = half - 1; k >= 2; k--) {
+    heat[k] = (heat[k - 1] + heat[k - 2] + heat[k - 2]) / 3;
+  }
+  
+  if (random8() < sparking) {
+    int y = random8(7);
+    heat[y] = qadd8(heat[y], random8(160, 255));
+  }
+  
+  for (int j = 0; j < half; j++) {
+    CRGB color = ColorFromPalette(HeatColors_p, scale8(heat[j], 240));
+    leds[half + j] = color;
+    leds[half - 1 - j] = color;
+  }
+}
+
+void lightningStorm() {
+  static unsigned long lastStrike = 0;
+  unsigned long currentTime = millis();
+  
+  for (int i = 0; i < NUM_LEDS; i++) {
+    leds[i].nscale8(220);
+    leds[i] += CRGB(0, 0, 15);
+  }
+  
+  if (currentTime - lastStrike > random16(100, 2000)) {
+    lastStrike = currentTime;
+    int strikePos = random16(NUM_LEDS - 30);
+    int strikeLength = random8(10, 25);
+    
+    for (int i = strikePos; i < strikePos + strikeLength && i < NUM_LEDS; i++) {
+      leds[i] = CRGB(255, 255, 255);
+    }
+    
+    if (random8() < 150) {
+      int secondaryPos = strikePos + random8(-5, 5);
+      int secondaryLen = random8(5, 12);
+      for (int i = secondaryPos; i < secondaryPos + secondaryLen && i >= 0 && i < NUM_LEDS; i++) {
+        leds[i] = CRGB(200, 200, 255);
+      }
+    }
+  }
+}
+
+void plasmaField() {
+  static uint16_t plasmaTime = 0;
+  static uint8_t plasmaHue = 0;
+  
+  plasmaTime += 2;
+  plasmaHue += 1;
+  
+  for (int i = 0; i < NUM_LEDS; i++) {
+    uint8_t wave1 = sin8(plasmaTime/4 + i * 8);
+    uint8_t wave2 = sin8(plasmaTime/3 + i * 6 + 85);
+    uint8_t wave3 = sin8(plasmaTime/5 + i * 4 + 170);
+    uint8_t wave4 = sin8(plasmaTime/7 + i * 12);
+    
+    uint8_t combined = (wave1/4 + wave2/3 + wave3/3 + wave4/6);
+    uint8_t hue = plasmaHue + combined/2;
+    uint8_t brightness = combined + sin8(plasmaTime/8 + i)/4;
+    
+    leds[i] = CHSV(hue, 240, brightness);
+  }
+}
+
+void meteorShower() {
+  struct Meteor {
+    int16_t pos;
+    uint8_t hue;
+    uint8_t size;
+    int8_t speed;
+  };
+  static Meteor meteors[6];
+  static bool initialized = false;
+  static unsigned long lastUpdate = 0;
+  
+  if (!initialized) {
+    for (int i = 0; i < 6; i++) {
+      meteors[i] = {(int16_t)(-random8(20)), (uint8_t)random8(), (uint8_t)(3 + random8(4)), (int8_t)(1 + random8(2))};
+    }
+    initialized = true;
+  }
+  
+  fadeToBlackBy(leds, NUM_LEDS, 60);
+  
+  if (millis() - lastUpdate > 50) {
+    lastUpdate = millis();
+    
+    for (int m = 0; m < 6; m++) {
+      Meteor &meteor = meteors[m];
+      
+      for (int t = 0; t < meteor.size; t++) {
+        int16_t trailPos = meteor.pos - t;
+        if (trailPos >= 0 && trailPos < NUM_LEDS) {
+          uint8_t brightness = map(t, 0, meteor.size-1, 255, 50);
+          leds[trailPos] += CHSV(meteor.hue, 200, brightness);
+        }
+      }
+      
+      meteor.pos += meteor.speed;
+      
+      if (meteor.pos >= NUM_LEDS + meteor.size) {
+        meteor.pos = -meteor.size;
+        meteor.hue = random8();
+        meteor.size = 3 + random8(4);
+        meteor.speed = 1 + random8(2);
+      }
+    }
+  }
+}
+
+void auroraWaves() {
+  static uint16_t wave1_pos = 0, wave2_pos = 0, wave3_pos = 0;
+  static uint8_t auroraHue = 96;
+  
+  wave1_pos += 2;
+  wave2_pos += 3;
+  wave3_pos += 1;
+  
+  fill_solid(leds, NUM_LEDS, CRGB::Black);
+  
+  for (int i = 0; i < NUM_LEDS; i++) {
+    uint8_t wave1 = sin8(wave1_pos + i * 4);
+    uint8_t wave2 = sin8(wave2_pos + i * 6 + 85);
+    uint8_t wave3 = sin8(wave3_pos + i * 2 + 170);
+    
+    uint8_t hue1 = auroraHue + sin8(i * 8)/8;
+    uint8_t hue2 = auroraHue + 40;
+    uint8_t hue3 = auroraHue + 80;
+    
+    if (wave1 > 100) {
+      leds[i] += CHSV(hue1, 255, (wave1-100)*2);
+    }
+    if (wave2 > 120) {
+      leds[i] += CHSV(hue2, 240, (wave2-120)*2);
+    }
+    if (wave3 > 140) {
+      leds[i] += CHSV(hue3, 200, (wave3-140)*3);
+    }
+  }
+  
+  if (random8() < 2) {
+    auroraHue += random8(5) - 2;
+    auroraHue = constrain(auroraHue, 80, 140);
+  }
+}
+
+void lavaFlow() {
+  // Ultra-dynamic lava with faster, more organic movement
+  uint32_t time = millis();
+  
+  // Faster, more chaotic flow speeds for organic movement
+  uint16_t mainFlow = time / 15;      // Faster primary flow (was 25)
+  uint16_t bubbleFlow = time / 7;     // Much faster bubbling (was 12)
+  uint16_t waveFlow = time / 35;      // Faster waves (was 65)
+  uint16_t slowChurn = time / 90;     // Faster deep churning (was 180)
+  uint16_t fastTurbulence = time / 4; // New: very fast surface turbulence
+  
+  // Dynamic color evolution with more variation
+  uint8_t colorShift = (time / 60) & 255;  // Faster color cycling (was 100)
+  uint8_t colorVariation = (time / 40) & 255;  // Additional color complexity
+  
+  for (int i = 0; i < NUM_LEDS; i++) {
+    // Create highly complex flowing heat patterns with more layers
+    uint8_t bubble = inoise8(i * 35 + bubbleFlow, bubbleFlow / 3);     // Tighter, faster bubbles
+    uint8_t wave = inoise8(i * 55, waveFlow);                          // More frequent waves
+    uint8_t flow = inoise8(i * 85, mainFlow);                          // Tighter main flow
+    uint8_t churn = inoise8(i * 150, slowChurn);                       // More active churning
+    uint8_t turbulence = inoise8(i * 25 + fastTurbulence, fastTurbulence / 2); // Surface chaos
+    
+    // Multiple directional flows for organic movement
+    uint16_t flowPos1 = i + (mainFlow / 6);  // Faster primary flow
+    uint16_t flowPos2 = i - (bubbleFlow / 10);  // Counter-flow
+    uint8_t directionalHeat1 = inoise8(flowPos1 * 45, time / 25);
+    uint8_t directionalHeat2 = inoise8(flowPos2 * 65, time / 35);
+    
+    // Complex heat mixing with more dynamic interaction
+    uint16_t totalHeat = (bubble * 4 + wave * 3 + flow * 5 + churn * 3 + 
+                         turbulence * 6 + directionalHeat1 * 4 + directionalHeat2 * 2) / 10;
+    totalHeat = constrain(totalHeat, 0, 255);
+    
+    // Enhanced dynamic color temperature with spatial variation
+    uint8_t tempShift = sin8(colorShift + i * 12) / 6;  // More color variation
+    uint8_t spatialVar = sin8(colorVariation + i * 20) / 4;  // Additional spatial variation
+    
+    // Richer lava color palette with more reds, oranges, and yellows
+    CRGB color;
+    uint8_t adjustedHeat = qadd8(qadd8(totalHeat, tempShift), spatialVar);
+    
+    if (adjustedHeat < 50) {
+      // Deep dark red to rich red
+      uint8_t red = 20 + (adjustedHeat * 4);
+      color = CRGB(red, adjustedHeat / 8, 0);
+    } else if (adjustedHeat < 100) {
+      // Rich reds to warm orange-reds
+      uint8_t progress = adjustedHeat - 50;
+      uint8_t red = 220 + (progress / 2);
+      uint8_t green = progress * 2;
+      color = CRGB(red, green, 0);
+    } else if (adjustedHeat < 150) {
+      // Warm oranges to bright oranges
+      uint8_t progress = adjustedHeat - 100;
+      uint8_t red = 255;
+      uint8_t green = 100 + (progress * 2);
+      uint8_t blue = progress / 8;
+      color = CRGB(red, green, blue);
+    } else if (adjustedHeat < 200) {
+      // Bright orange to golden yellow
+      uint8_t progress = adjustedHeat - 150;
+      uint8_t red = 255;
+      uint8_t green = 200 + progress;
+      uint8_t blue = progress / 3;
+      color = CRGB(red, green, blue);
+    } else {
+      // Golden yellow to bright white-yellow
+      uint8_t progress = adjustedHeat - 200;
+      uint8_t red = 255;
+      uint8_t green = 255;
+      uint8_t blue = 50 + (progress * 3);
+      color = CRGB(red, green, blue);
+    }
+    
+    // Enhanced flickering with multiple frequency layers
+    uint8_t flicker1 = sin8(time / 5 + i * 20) / 20;   // Fast flicker
+    uint8_t flicker2 = sin8(time / 12 + i * 8) / 32;   // Medium flicker
+    uint8_t brightness = 220 + flicker1 + flicker2;
+    color.nscale8(brightness);
+    
+    leds[i] = color;
+  }
+}
