@@ -1,10 +1,15 @@
 /// @file    m5lights_v1_simple.ino
 /// @brief   Ultra-Simple ESP-NOW LED Sync with 12 Patterns + Music Mode
-/// @version 3.1.9
+/// @version 3.2.0
 /// @date    2024-10-26
 /// @author  John Cohn (adapted from Mark Kriegsman)
 ///
 /// @changelog
+/// v3.2.0 (2024-10-26) - Added Incomplete Frame Detection & Auto-Recovery
+///   - Followers now detect when receiving packets but not complete frames
+///   - Auto-resync if no complete frame received within 500ms (packet loss)
+///   - Prevents "stuck following" state where display shows blue but LEDs are stale
+///   - Improved reliability during WiFi interference or signal issues
 /// v3.1.9 (2024-10-26) - Fixed Leader/Follower Sync Timing
 ///   - CRITICAL FIX: Leader now broadcasts BEFORE showing LEDs (was backwards!)
 ///   - Leader: generate pattern → broadcast → wait LEADER_DELAY_MS → show
@@ -63,7 +68,7 @@
 FASTLED_USING_NAMESPACE
 
 // Version info
-#define VERSION "3.1.9"
+#define VERSION "3.2.0"
 
 // Hardware config
 #define LED_PIN 32
@@ -99,6 +104,7 @@ NodeMode currentMode = MODE_NORMAL;
 unsigned long lastModeSwitch = 0;
 bool leaderDataActive = false;
 unsigned long lastLeaderMessage = 0;
+unsigned long lastCompleteFrame = 0;  // Last time we received a complete LED frame
 uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
 // Pattern globals
@@ -151,6 +157,7 @@ unsigned long lastBroadcast = 0;
 #define BROADCAST_INTERVAL_MS 50
 #define LEADER_TIMEOUT_MS 8000  // Increased from 3s to 8s for robustness
 #define REJOIN_SCAN_INTERVAL_MS 15000  // Scan for leaders every 15 seconds
+#define COMPLETE_FRAME_TIMEOUT_MS 500  // Max time between complete frames before resync
 
 // Pattern function declarations
 void rainbow();
@@ -231,6 +238,8 @@ void onDataReceived(const esp_now_recv_info* recv_info, const uint8_t *incomingD
   // Show LEDs when we receive the last packet
   if (receivedData.startIndex + receivedData.count >= NUM_LEDS) {
     FastLED.show();
+    lastCompleteFrame = millis();  // Mark successful complete frame reception
+    Serial.println("ESP-NOW: Complete frame received and displayed");
   }
 }
 
@@ -614,7 +623,21 @@ void nextPattern() {
 // Enhanced leader timeout with rejoin logic
 void checkLeaderTimeout() {
   unsigned long now = millis();
-  
+
+  // Check for incomplete frame reception: receiving packets but not complete frames
+  if (leaderDataActive && lastCompleteFrame > 0 &&
+      (now - lastCompleteFrame > COMPLETE_FRAME_TIMEOUT_MS) &&
+      (now - lastLeaderMessage < LEADER_TIMEOUT_MS)) {
+    // We're receiving ESP-NOW data but haven't gotten a complete frame recently
+    // This indicates packet loss - force resync
+    Serial.println("WARNING: Incomplete frames detected - forcing resync");
+    leaderDataActive = false;
+    rejoinMode = true;
+    rejoinAttempts = 0;
+    lastRejoinScan = now;
+    lastCompleteFrame = 0;  // Reset for next sync attempt
+  }
+
   if (leaderDataActive && (now - lastLeaderMessage > LEADER_TIMEOUT_MS)) {
     leaderDataActive = false;
     rejoinMode = true;
