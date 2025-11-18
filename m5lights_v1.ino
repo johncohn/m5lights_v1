@@ -1,10 +1,17 @@
 /// @file    m5lights_v1_simple.ino
 /// @brief   Ultra-Simple ESP-NOW LED Sync with 12 Patterns + Music Mode
-/// @version 3.2.1
+/// @version 3.3.0
 /// @date    2024-10-26
 /// @author  John Cohn (adapted from Mark Kriegsman)
 ///
 /// @changelog
+/// v3.3.0 (2024-10-26) - Added Leader Conflict Prevention & Enhanced Debug Logging
+///   - CRITICAL: Nodes now refuse to become leader if another leader exists
+///   - Prevents multiple simultaneous leaders (double-red state)
+///   - Extensive debug logging for ESP-NOW packet reception
+///   - Timestamped debug output for incomplete frame detection
+///   - Leader timeout events now show detailed timing information
+///   - Helps diagnose why followers aren't reconnecting to leaders
 /// v3.2.1 (2024-10-26) - Fixed Rejoin Logic Stuck State
 ///   - CRITICAL FIX: Followers now immediately exit rejoin mode when receiving leader data
 ///   - Prevents stuck state where followers stay green despite leader broadcasting
@@ -73,7 +80,7 @@
 FASTLED_USING_NAMESPACE
 
 // Version info
-#define VERSION "3.2.1"
+#define VERSION "3.3.0"
 
 // Hardware config
 #define LED_PIN 32
@@ -202,35 +209,53 @@ void onDataSent(const wifi_tx_info_t *info, esp_now_send_status_t status) {
 }
 
 void onDataReceived(const esp_now_recv_info* recv_info, const uint8_t *incomingData, int len) {
-  Serial.print("ESP-NOW: Received ");
+  unsigned long now = millis();
+  Serial.print("[");
+  Serial.print(now);
+  Serial.print("ms] ESP-NOW RX: ");
   Serial.print(len);
-  Serial.println(" bytes");
-  
+  Serial.print(" bytes");
+
   // Only process if we're a follower (not a leader)
   if (currentMode == MODE_NORMAL_LEADER || currentMode == MODE_MUSIC_LEADER) {
-    Serial.println("ESP-NOW: Ignoring (I'm a leader)");
+    Serial.println(" - IGNORED (I'm a leader)");
     return;
   }
-  
+  Serial.println();
+
   // Verify message size
   if (len != sizeof(LEDSync)) {
-    Serial.print("ESP-NOW: Wrong size, expected ");
-    Serial.println(sizeof(LEDSync));
+    Serial.print("ESP-NOW: WRONG SIZE, expected ");
+    Serial.print(sizeof(LEDSync));
+    Serial.print(", got ");
+    Serial.println(len);
     return;
   }
-  
+
   LEDSync receivedData;
   memcpy(&receivedData, incomingData, sizeof(receivedData));
-  
+
+  Serial.print("  Packet: seq=");
+  Serial.print(receivedData.sequenceNum);
+  Serial.print(", start=");
+  Serial.print(receivedData.startIndex);
+  Serial.print(", count=");
+  Serial.println(receivedData.count);
+
   // Update leader activity
+  bool wasActive = leaderDataActive;
   lastLeaderMessage = millis();
   leaderDataActive = true;
+
+  if (!wasActive) {
+    Serial.println("  >>> LEADER DETECTED - now following <<<");
+  }
 
   // Exit rejoin mode immediately when receiving valid leader data
   if (rejoinMode) {
     rejoinMode = false;
     rejoinAttempts = 0;
-    Serial.println("ESP-NOW: Leader detected - exiting rejoin mode");
+    Serial.println("  >>> EXITING REJOIN MODE <<<");
   }
 
   // Apply brightness from leader (for audio sync)
@@ -251,7 +276,9 @@ void onDataReceived(const esp_now_recv_info* recv_info, const uint8_t *incomingD
   if (receivedData.startIndex + receivedData.count >= NUM_LEDS) {
     FastLED.show();
     lastCompleteFrame = millis();  // Mark successful complete frame reception
-    Serial.println("ESP-NOW: Complete frame received and displayed");
+    Serial.println("  ✓ COMPLETE FRAME - LEDs updated");
+  } else {
+    Serial.println("  ... waiting for more packets");
   }
 }
 
@@ -493,6 +520,21 @@ void handleButtons() {
         // Long press: Toggle leader status of current mode
         Serial.print("Long press from mode: ");
         Serial.println(currentMode);
+
+        // LEADER CONFLICT PREVENTION: Check if another leader already exists
+        if (currentMode == MODE_NORMAL || currentMode == MODE_MUSIC) {
+          if (leaderDataActive || (now - lastLeaderMessage < LEADER_TIMEOUT_MS)) {
+            Serial.println("*** BLOCKED: Another leader is already active! ***");
+            Serial.print("leaderDataActive: ");
+            Serial.print(leaderDataActive);
+            Serial.print(", Time since last leader msg: ");
+            Serial.println(now - lastLeaderMessage);
+            buttonState = BTN_LONG_TRIGGERED;
+            lastAction = now;
+            break;  // Prevent becoming leader
+          }
+        }
+
         if (currentMode == MODE_NORMAL) {
           Serial.println("Switching NORMAL -> NORMAL_LEADER");
           switchToNormalLeaderMode();
@@ -642,7 +684,14 @@ void checkLeaderTimeout() {
       (now - lastLeaderMessage < LEADER_TIMEOUT_MS)) {
     // We're receiving ESP-NOW data but haven't gotten a complete frame recently
     // This indicates packet loss - force resync
-    Serial.println("WARNING: Incomplete frames detected - forcing resync");
+    Serial.println("\n!!! WARNING: INCOMPLETE FRAMES DETECTED !!!");
+    Serial.print("  Time since last complete frame: ");
+    Serial.print(now - lastCompleteFrame);
+    Serial.println("ms");
+    Serial.print("  Time since last leader msg: ");
+    Serial.print(now - lastLeaderMessage);
+    Serial.println("ms");
+    Serial.println("  >>> FORCING RESYNC <<<\n");
     leaderDataActive = false;
     rejoinMode = true;
     rejoinAttempts = 0;
@@ -651,11 +700,15 @@ void checkLeaderTimeout() {
   }
 
   if (leaderDataActive && (now - lastLeaderMessage > LEADER_TIMEOUT_MS)) {
+    Serial.println("\n!!! LEADER TIMEOUT !!!");
+    Serial.print("  Time since last leader msg: ");
+    Serial.print(now - lastLeaderMessage);
+    Serial.println("ms");
+    Serial.println("  >>> ENTERING REJOIN MODE <<<\n");
     leaderDataActive = false;
     rejoinMode = true;
     rejoinAttempts = 0;
     lastRejoinScan = now;
-    Serial.println("Leader timeout - entering rejoin mode");
   }
   
   // Active rejoin scanning for dropped followers
