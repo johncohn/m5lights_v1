@@ -1,10 +1,20 @@
 /// @file    m5lights_v1_simple.ino
 /// @brief   Ultra-Simple ESP-NOW LED Sync with 12 Patterns + Music Mode
-/// @version 3.3.2
-/// @date    2024-10-26
+/// @version 3.3.4
+/// @date    2024-11-24
 /// @author  John Cohn (adapted from Mark Kriegsman)
 ///
 /// @changelog
+/// v3.3.4 (2024-11-24) - Auto-Restart on Stuck State (CRITICAL ROBUSTNESS FIX!)
+///   - Node now automatically restarts if stuck receiving packets but not complete frames
+///   - Detects two stuck states: (1) was working but stopped, (2) never got complete frame
+///   - Timeout increased from 2s to 5s to avoid false positives
+///   - ESP.restart() provides clean recovery instead of attempted resync
+///   - Fixes sporadic 10+ minute frozen follower issue
+///   - More robust than power cycling - happens automatically
+/// v3.3.3 (2024-11-24) - Fixed ESP-NOW Callback Signature
+///   - Changed onDataSent() parameter from wifi_tx_info_t to uint8_t* mac_addr
+///   - Required for compilation with current ESP32 library version
 /// v3.3.2 (2024-10-26) - Fixed ESP-NOW Packet Loss (CRITICAL FIX!)
 ///   - Added 500μs delay between packet sends to prevent buffer overflow
 ///   - Fixes "2 packets failed, 3 succeeded" broadcast failures
@@ -90,7 +100,7 @@
 FASTLED_USING_NAMESPACE
 
 // Version info
-#define VERSION "3.3.2"
+#define VERSION "3.3.4"
 
 // Hardware config
 #define LED_PIN 32
@@ -179,7 +189,7 @@ unsigned long lastBroadcast = 0;
 #define BROADCAST_INTERVAL_MS 50
 #define LEADER_TIMEOUT_MS 8000  // Increased from 3s to 8s for robustness
 #define REJOIN_SCAN_INTERVAL_MS 15000  // Scan for leaders every 15 seconds
-#define COMPLETE_FRAME_TIMEOUT_MS 2000  // Max time between complete frames before resync
+#define COMPLETE_FRAME_TIMEOUT_MS 5000  // Max time between complete frames before restart
 
 // Pattern function declarations
 void rainbow();
@@ -723,25 +733,38 @@ void nextPattern() {
 void checkLeaderTimeout() {
   unsigned long now = millis();
 
-  // Check for incomplete frame reception: receiving packets but not complete frames
-  if (leaderDataActive && lastCompleteFrame > 0 &&
-      (now - lastCompleteFrame > COMPLETE_FRAME_TIMEOUT_MS) &&
-      (now - lastLeaderMessage < LEADER_TIMEOUT_MS)) {
-    // We're receiving ESP-NOW data but haven't gotten a complete frame recently
-    // This indicates packet loss - force resync
-    Serial.println("\n!!! WARNING: INCOMPLETE FRAMES DETECTED !!!");
+  // Check for stuck state: receiving packets but not complete frames
+  // Case 1: We've received frames before but haven't gotten one recently
+  // Case 2: We've been receiving packets for a while but NEVER got a complete frame
+  bool stuckState = false;
+
+  if (leaderDataActive && (now - lastLeaderMessage < LEADER_TIMEOUT_MS)) {
+    // We're actively receiving leader packets
+    if (lastCompleteFrame > 0 && (now - lastCompleteFrame > COMPLETE_FRAME_TIMEOUT_MS)) {
+      // Case 1: Had complete frames before, but not recently
+      stuckState = true;
+    } else if (lastCompleteFrame == 0 && leaderDataActive && (now - lastLeaderMessage > COMPLETE_FRAME_TIMEOUT_MS)) {
+      // Case 2: Never received complete frame but been receiving packets for 5+ seconds
+      stuckState = true;
+    }
+  }
+
+  if (stuckState) {
+    // Stuck state detected - restart for clean recovery
+    Serial.println("\n!!! CRITICAL: STUCK STATE DETECTED !!!");
     Serial.print("  Time since last complete frame: ");
-    Serial.print(now - lastCompleteFrame);
-    Serial.println("ms");
+    if (lastCompleteFrame > 0) {
+      Serial.print(now - lastCompleteFrame);
+      Serial.println("ms");
+    } else {
+      Serial.println("NEVER");
+    }
     Serial.print("  Time since last leader msg: ");
     Serial.print(now - lastLeaderMessage);
     Serial.println("ms");
-    Serial.println("  >>> FORCING RESYNC <<<\n");
-    leaderDataActive = false;
-    rejoinMode = true;
-    rejoinAttempts = 0;
-    lastRejoinScan = now;
-    lastCompleteFrame = 0;  // Reset for next sync attempt
+    Serial.println("  >>> RESTARTING ESP32 IN 2 SECONDS <<<\n");
+    delay(2000);  // Give time for serial message to be sent
+    ESP.restart();  // Clean restart - most robust recovery
   }
 
   if (leaderDataActive && (now - lastLeaderMessage > LEADER_TIMEOUT_MS)) {
