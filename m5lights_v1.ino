@@ -1,10 +1,16 @@
 /// @file    m5lights_v1_simple.ino
-/// @brief   Ultra-Simple ESP-NOW LED Sync with 12 Patterns + Music Mode
-/// @version 3.3.4
+/// @brief   Ultra-Simple ESP-NOW LED Sync with 14 Patterns + Music Mode
+/// @version 3.4.0
 /// @date    2024-11-24
 /// @author  John Cohn (adapted from Mark Kriegsman)
 ///
 /// @changelog
+/// v3.4.0 (2024-11-24) - Pattern Overhaul: Full-Strand Patterns Only
+///   - REMOVED chase/blob patterns: doChase, juggle, meteorShower (feedback: not visually appealing)
+///   - ADDED 6 new full-strand patterns: Sparkle, ColorWaves, Pride, Ocean, Twinkle, Palette
+///   - All patterns now fill entire LED strand for better visual impact
+///   - Total patterns: 14 (was 11, removed 3, added 6)
+///   - Better for public display - entire strand always lit
 /// v3.3.4 (2024-11-24) - Auto-Restart on Stuck State (CRITICAL ROBUSTNESS FIX!)
 ///   - Node now automatically restarts if stuck receiving packets but not complete frames
 ///   - Detects two stuck states: (1) was working but stopped, (2) never got complete frame
@@ -100,7 +106,7 @@
 FASTLED_USING_NAMESPACE
 
 // Version info
-#define VERSION "3.3.4"
+#define VERSION "3.4.0"
 
 // Hardware config
 #define LED_PIN 32
@@ -193,28 +199,32 @@ unsigned long lastBroadcast = 0;
 
 // Pattern function declarations
 void rainbow();
-void doChase();
-void juggle();
 void rainbowWithGlitter();
 void confetti();
 void bpm();
 void fire();
 void lightningStorm();
 void plasmaField();
-void meteorShower();
 void auroraWaves();
-void lavaFlow();
+void sparkle();
+void colorWaves();
+void pride();
+void ocean();
+void twinkle();
+void paletteBlend();
 
 // Pattern list and names
 typedef void (*SimplePatternList[])();
-SimplePatternList gPatterns = { 
-  rainbow, doChase, juggle, rainbowWithGlitter, confetti, bpm,
-  fire, lightningStorm, plasmaField, meteorShower, auroraWaves
+SimplePatternList gPatterns = {
+  rainbow, rainbowWithGlitter, confetti, bpm, fire, lightningStorm,
+  plasmaField, auroraWaves, sparkle, colorWaves, pride, ocean,
+  twinkle, paletteBlend
 };
 
 const char* patternNames[] = {
-  "Rainbow", "Chase", "Juggle", "Rainbow+Glitter", "Confetti", "BPM",
-  "Fire", "Lightning", "Plasma", "Meteors", "Aurora"
+  "Rainbow", "Rainbow+Glitter", "Confetti", "BPM", "Fire", "Lightning",
+  "Plasma", "Aurora", "Sparkle", "ColorWaves", "Pride", "Ocean",
+  "Twinkle", "Palette"
 };
 
 #define ARRAY_SIZE(A) (sizeof(A) / sizeof((A)[0]))
@@ -950,21 +960,6 @@ void confetti() {
   leds[pos] += CHSV(gHue + random8(64), 200, 255);
 }
 
-void sinelon() {
-  fadeToBlackBy(leds, NUM_LEDS, 20);
-  int pos = beatsin16(13, 0, NUM_LEDS - 1);
-  leds[pos] += CHSV(gHue, 255, 192);
-}
-
-void juggle() {
-  fadeToBlackBy(leds, NUM_LEDS, 20);
-  uint8_t dothue = 0;
-  for (int i = 0; i < 8; i++) {
-    leds[beatsin16(i + 7, 0, NUM_LEDS - 1)] |= CHSV(dothue, 200, 255);
-    dothue += 32;
-  }
-}
-
 void bpm() {
   uint8_t BeatsPerMinute = 62;
   CRGBPalette16 palette = PartyColors_p;
@@ -972,24 +967,6 @@ void bpm() {
   for (int i = 0; i < NUM_LEDS; i++) {
     leds[i] = ColorFromPalette(palette, gHue + (i * 2), beat - gHue + (i * 10));
   }
-}
-
-void doChase() {
-  static uint32_t last = 0;
-  static uint16_t pos = 0;
-  static uint8_t hue = 0;
-  uint32_t now = millis();
-  if (now - last < 100) return;
-  last = now;
-  pos = (pos + 1) % NUM_LEDS;
-  fadeToBlackBy(leds, NUM_LEDS, 50);
-  for (int i = 0; i < NUM_LEDS; i += 20) {
-    for (int t = 0; t < 10; t++) {
-      int idx = (pos + i + NUM_LEDS - t) % NUM_LEDS;
-      leds[idx] |= CHSV(hue + i, 255, map(t, 0, 9, 255, 50));
-    }
-  }
-  hue++;
 }
 
 void fire() {
@@ -1064,52 +1041,6 @@ void plasmaField() {
     uint8_t brightness = combined + sin8(plasmaTime/8 + i)/4;
     
     leds[i] = CHSV(hue, 240, brightness);
-  }
-}
-
-void meteorShower() {
-  struct Meteor {
-    int16_t pos;
-    uint8_t hue;
-    uint8_t size;
-    int8_t speed;
-  };
-  static Meteor meteors[6];
-  static bool initialized = false;
-  static unsigned long lastUpdate = 0;
-  
-  if (!initialized) {
-    for (int i = 0; i < 6; i++) {
-      meteors[i] = {(int16_t)(-random8(20)), (uint8_t)random8(), (uint8_t)(3 + random8(4)), (int8_t)(1 + random8(2))};
-    }
-    initialized = true;
-  }
-  
-  fadeToBlackBy(leds, NUM_LEDS, 60);
-  
-  if (millis() - lastUpdate > 50) {
-    lastUpdate = millis();
-    
-    for (int m = 0; m < 6; m++) {
-      Meteor &meteor = meteors[m];
-      
-      for (int t = 0; t < meteor.size; t++) {
-        int16_t trailPos = meteor.pos - t;
-        if (trailPos >= 0 && trailPos < NUM_LEDS) {
-          uint8_t brightness = map(t, 0, meteor.size-1, 255, 50);
-          leds[trailPos] += CHSV(meteor.hue, 200, brightness);
-        }
-      }
-      
-      meteor.pos += meteor.speed;
-      
-      if (meteor.pos >= NUM_LEDS + meteor.size) {
-        meteor.pos = -meteor.size;
-        meteor.hue = random8();
-        meteor.size = 3 + random8(4);
-        meteor.speed = 1 + random8(2);
-      }
-    }
   }
 }
 
@@ -1229,7 +1160,114 @@ void lavaFlow() {
     uint8_t flicker2 = sin8(time / 12 + i * 8) / 32;   // Medium flicker
     uint8_t brightness = 220 + flicker1 + flicker2;
     color.nscale8(brightness);
-    
+
     leds[i] = color;
+  }
+}
+
+// NEW FILL-THE-STRAND PATTERNS
+
+void sparkle() {
+  // Random twinkling across entire strand
+  fadeToBlackBy(leds, NUM_LEDS, 30);
+
+  // Add multiple sparkles per frame
+  for (int i = 0; i < 15; i++) {
+    int pos = random16(NUM_LEDS);
+    leds[pos] = CHSV(random8(), 200, 255);
+  }
+}
+
+void colorWaves() {
+  // Smooth color waves flowing across entire strand
+  static uint16_t wave1 = 0, wave2 = 0, wave3 = 0;
+  wave1 += 3;
+  wave2 += 5;
+  wave3 += 2;
+
+  for (int i = 0; i < NUM_LEDS; i++) {
+    uint8_t hue1 = sin8(wave1 + i * 8);
+    uint8_t hue2 = sin8(wave2 + i * 12 + 85);
+    uint8_t hue3 = sin8(wave3 + i * 6 + 170);
+    uint8_t hue = (hue1 + hue2 + hue3) / 3;
+    uint8_t brightness = (sin8(wave1 + i * 10) + sin8(wave2 + i * 8)) / 2;
+    leds[i] = CHSV(hue, 255, brightness);
+  }
+}
+
+void pride() {
+  // Rainbow pride flag colors filling the strand
+  static uint16_t scroll = 0;
+  scroll += 2;
+
+  for (int i = 0; i < NUM_LEDS; i++) {
+    uint8_t hue = (i * 256 / NUM_LEDS + scroll) % 256;
+    uint8_t brightness = 220 + sin8(scroll + i * 8) / 8;
+    leds[i] = CHSV(hue, 255, brightness);
+  }
+}
+
+void ocean() {
+  // Blue/cyan wave patterns
+  static uint16_t wave1 = 0, wave2 = 0;
+  wave1 += 4;
+  wave2 += 2;
+
+  for (int i = 0; i < NUM_LEDS; i++) {
+    uint8_t wave = (sin8(wave1 + i * 6) + sin8(wave2 + i * 10 + 128)) / 2;
+    uint8_t hue = 128 + sin8(wave1 + i * 3) / 8;  // Blues and cyans
+    uint8_t brightness = 150 + wave / 2;
+    leds[i] = CHSV(hue, 240, brightness);
+  }
+}
+
+void twinkle() {
+  // All LEDs pulsing with different colors
+  static uint8_t pulseState[NUM_LEDS];
+  static uint8_t pulseHue[NUM_LEDS];
+  static bool initialized = false;
+
+  if (!initialized) {
+    for (int i = 0; i < NUM_LEDS; i++) {
+      pulseState[i] = random8();
+      pulseHue[i] = random8();
+    }
+    initialized = true;
+  }
+
+  for (int i = 0; i < NUM_LEDS; i++) {
+    pulseState[i] += 2 + (i % 3);  // Different speeds
+    uint8_t brightness = sin8(pulseState[i]);
+    leds[i] = CHSV(pulseHue[i], 200, brightness);
+
+    // Occasionally change hue
+    if (random8() < 3) {
+      pulseHue[i] = random8();
+    }
+  }
+}
+
+void paletteBlend() {
+  // Smooth palette color blending across strand
+  static uint16_t paletteShift = 0;
+  static uint8_t paletteIndex = 0;
+  paletteShift += 2;
+
+  // Rotate through different color palettes
+  CRGBPalette16 currentPalette;
+  if ((millis() / 5000) % 4 == 0) {
+    currentPalette = RainbowColors_p;
+  } else if ((millis() / 5000) % 4 == 1) {
+    currentPalette = PartyColors_p;
+  } else if ((millis() / 5000) % 4 == 2) {
+    currentPalette = OceanColors_p;
+  } else {
+    currentPalette = ForestColors_p;
+  }
+
+  for (int i = 0; i < NUM_LEDS; i++) {
+    uint8_t index = paletteShift + (i * 256 / NUM_LEDS);
+    uint8_t brightness = 200 + sin8(paletteShift + i * 8) / 4;
+    leds[i] = ColorFromPalette(currentPalette, index, brightness, LINEARBLEND);
   }
 }
