@@ -1,10 +1,18 @@
 /// @file    m5lights_v1_simple.ino
 /// @brief   Ultra-Simple ESP-NOW LED Sync with 14 Patterns + Music Mode
-/// @version 3.4.2
+/// @version 3.5.0
 /// @date    2024-11-24
 /// @author  John Cohn (adapted from Mark Kriegsman)
 ///
 /// @changelog
+/// v3.5.0 (2024-11-24) - Smooth Brightness Decay Envelope (Max's Request!)
+///   - MAJOR IMPROVEMENT: Added smooth decay to music-reactive brightness
+///   - Fast attack: Brightness instantly jumps up on peaks
+///   - Slow decay: Smoothly falls off over 2 seconds (configurable)
+///   - New peaks interrupt decay if they're brighter
+///   - Eliminates jarring brightness jumps - much smoother visual experience
+///   - Perfect for music visualization - "breathing" effect
+///   - Thanks to Max for the excellent feedback!
 /// v3.4.2 (2024-11-24) - Ultra-Sticky Beat Detection (Even More Sensitive)
 ///   - ULTRA-LOW thresholds: 2 beats to enter, 1 beat to stay (was 3/2)
 ///   - Increased timeout to 20 seconds (was 15) - maximum stickiness
@@ -118,7 +126,7 @@
 FASTLED_USING_NAMESPACE
 
 // Version info
-#define VERSION "3.4.2"
+#define VERSION "3.5.0"
 
 // Hardware config
 #define LED_PIN 32
@@ -174,6 +182,11 @@ uint32_t lastBpmMillis = 0;
 bool audioDetected = true;
 uint8_t musicBrightness = BRIGHTNESS;
 unsigned long lastMusicDetectedTime = 0;  // Timestamp of last music detection for sticky behavior
+
+// Brightness decay envelope for smoother audio response
+float brightnessEnvelope = BRIGHTNESS;  // Current decaying brightness level
+unsigned long lastBrightnessUpdate = 0;  // For calculating decay time delta
+#define BRIGHTNESS_DECAY_SECONDS 2.0f    // Time for brightness to decay from max to min
 
 // Adaptive audio scaling - Ultra-fast response for immediate contrast
 float noiseFloor = 0.01f;          // Moving average of quiet ambient sound
@@ -244,9 +257,11 @@ const char* patternNames[] = {
 
 // ESP-NOW callbacks
 void onDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
-  if (status == ESP_NOW_SEND_SUCCESS) {
-    Serial.println("ESP-NOW: Send OK");
-  } else {
+  // Commented out to reduce serial spam - only report failures
+  // if (status == ESP_NOW_SEND_SUCCESS) {
+  //   Serial.println("ESP-NOW: Send OK");
+  // } else {
+  if (status != ESP_NOW_SEND_SUCCESS) {
     Serial.println("ESP-NOW: Send FAIL");
   }
 }
@@ -482,6 +497,14 @@ void updateBPM() {
 
     float bpm = cnt * (60000.0f / float(BPM_WINDOW));
 
+    // DEBUG: Print beat count to help diagnose detection issues
+    Serial.print("BPM Check: beats=");
+    Serial.print(cnt);
+    Serial.print(", bpm=");
+    Serial.print(bpm);
+    Serial.print(", audioDetected=");
+    Serial.println(audioDetected ? "YES" : "NO");
+
     // ULTRA-STICKY HYSTERESIS DETECTION - very sensitive and stable
     // Enter music mode: 2+ beats (very low threshold - highly sensitive)
     // Stay in music mode: 1+ beat OR within 20 second timeout (ultra sticky)
@@ -523,8 +546,36 @@ void updateAudioLevel() {
   float normalizedLevel = (audioLevel - noiseFloor) / range;
   normalizedLevel = constrain(normalizedLevel, 0.0f, 1.0f);
 
-  // Direct 1-25 mapping - no adaptive complexity
-  musicBrightness = 1 + (uint8_t)(normalizedLevel * 24);
+  // Calculate target brightness from audio (1-25 range)
+  float targetBrightness = 1.0f + (normalizedLevel * 24.0f);
+
+  // SMOOTH DECAY ENVELOPE - requested by Max!
+  // Fast attack (instant response to peaks), slow decay (smooth falloff over 2 seconds)
+  unsigned long now = millis();
+  float timeDelta = (now - lastBrightnessUpdate) / 1000.0f;  // Convert to seconds
+  lastBrightnessUpdate = now;
+
+  if (targetBrightness > brightnessEnvelope) {
+    // ATTACK: New peak is higher - instantly jump to it
+    brightnessEnvelope = targetBrightness;
+  } else {
+    // DECAY: Smoothly fall off over BRIGHTNESS_DECAY_SECONDS
+    // Calculate how much to decay per second to go from max(25) to min(1) in decay time
+    float decayRate = 24.0f / BRIGHTNESS_DECAY_SECONDS;  // Brightness units per second
+    brightnessEnvelope -= decayRate * timeDelta;
+
+    // Don't decay below the current target (new peak can interrupt decay)
+    if (brightnessEnvelope < targetBrightness) {
+      brightnessEnvelope = targetBrightness;
+    }
+
+    // Don't go below minimum brightness
+    if (brightnessEnvelope < 1.0f) {
+      brightnessEnvelope = 1.0f;
+    }
+  }
+
+  musicBrightness = (uint8_t)brightnessEnvelope;
   FastLED.setBrightness(musicBrightness);
 }
 
