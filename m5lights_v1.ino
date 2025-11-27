@@ -1,10 +1,16 @@
 /// @file    m5lights_v1_simple.ino
 /// @brief   Ultra-Simple ESP-NOW LED Sync with 14 Patterns + Music Mode
-/// @version 3.5.1
+/// @version 3.6.0
 /// @date    2024-11-24
 /// @author  John Cohn (adapted from Mark Kriegsman)
 ///
 /// @changelog
+/// v3.6.0 (2024-11-24) - Beat Threshold and Power Curve (Max's Request!)
+///   - Added BRIGHTNESS_THRESHOLD to require more pronounced beats for brightness boost
+///   - Applied power curve (exponent 2.0) to make quieter sounds have less impact
+///   - Only audio above threshold triggers brightness increase
+///   - Prevents lights from being too reactive to background/quiet sounds
+///   - More dramatic response to actual beats and loud music
 /// v3.5.1 (2024-11-24) - Faster Exponential Decay
 ///   - Changed decay time from 2.0s to 0.5s (much faster response)
 ///   - Changed from linear to exponential/Gaussian decay (more natural)
@@ -131,7 +137,7 @@
 FASTLED_USING_NAMESPACE
 
 // Version info
-#define VERSION "3.5.1"
+#define VERSION "3.6.0"
 
 // Hardware config
 #define LED_PIN 32
@@ -192,6 +198,8 @@ unsigned long lastMusicDetectedTime = 0;  // Timestamp of last music detection f
 float brightnessEnvelope = BRIGHTNESS;  // Current decaying brightness level
 unsigned long lastBrightnessUpdate = 0;  // For calculating decay time delta
 #define BRIGHTNESS_DECAY_SECONDS 0.5f    // Time constant for exponential decay (63% falloff)
+#define BRIGHTNESS_THRESHOLD 0.35f       // Audio must exceed this level to boost brightness (0.0-1.0)
+#define BRIGHTNESS_POWER_CURVE 2.0f      // Power curve exponent (1.0=linear, 2.0=square, 3.0=cube)
 
 // Adaptive audio scaling - Ultra-fast response for immediate contrast
 float noiseFloor = 0.01f;          // Moving average of quiet ambient sound
@@ -551,8 +559,20 @@ void updateAudioLevel() {
   float normalizedLevel = (audioLevel - noiseFloor) / range;
   normalizedLevel = constrain(normalizedLevel, 0.0f, 1.0f);
 
-  // Calculate target brightness from audio (1-25 range)
-  float targetBrightness = 1.0f + (normalizedLevel * 24.0f);
+  // THRESHOLD AND POWER CURVE - only pronounced beats boost brightness
+  // Quieter sounds below threshold stay at base brightness
+  // Above threshold, apply power curve for more dramatic response
+  float targetBrightness;
+  if (normalizedLevel < BRIGHTNESS_THRESHOLD) {
+    targetBrightness = 1.0f;  // Stay at minimum brightness for quiet sounds
+  } else {
+    // Scale from threshold to 1.0 into 0.0 to 1.0 range
+    float scaledLevel = (normalizedLevel - BRIGHTNESS_THRESHOLD) / (1.0f - BRIGHTNESS_THRESHOLD);
+    // Apply power curve (square, cube, etc.) to make response more dramatic
+    float curved = pow(scaledLevel, BRIGHTNESS_POWER_CURVE);
+    // Map to brightness range (1-25)
+    targetBrightness = 1.0f + (curved * 24.0f);
+  }
 
   // SMOOTH DECAY ENVELOPE - requested by Max!
   // Fast attack (instant response to peaks), exponential decay (0.5s time constant)

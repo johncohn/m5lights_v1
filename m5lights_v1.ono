@@ -1,4 +1,4 @@
-/// @file    m5lights_v1_simple.ino
+/// @file    m5lighttry agains_v1_simple.ino
 /// @brief   Ultra-Simple ESP-NOW LED Sync with 12 Patterns + Music Mode
 /// @version 3.2.1
 /// @date    2024-10-26
@@ -35,8 +35,8 @@ FASTLED_USING_NAMESPACE
 
 // Hardware config
 #define LED_PIN 32
-#define NUM_LEDS 100  // Reduced from 200 for M5Stick 5V power stability
-#define BRIGHTNESS 16  // Reduced further to limit current draw from M5Stick
+#define NUM_LEDS 200
+#define BRIGHTNESS 22  // Reduced by 25% from 30 for power stability
 #define COLOR_ORDER GRB
 #define CHIPSET WS2811
 
@@ -436,9 +436,9 @@ void updateAudioLevel() {
   float normalizedLevel = (audioLevel - noiseFloor) / dynamicRange;
   normalizedLevel = constrain(normalizedLevel, 0.0f, 1.0f);
   
-  // Reduced contrast for M5Stick power stability: 1 (barely on) to 64
+  // Full contrast: 1 (barely on) to 96 (full brightness)
   uint8_t minBrightness = 1;
-  uint8_t maxBrightness = 64;  // Reduced from 96 to limit current draw
+  uint8_t maxBrightness = 96;
   
   musicBrightness = minBrightness + (uint8_t)(normalizedLevel * (maxBrightness - minBrightness));
   FastLED.setBrightness(musicBrightness);
