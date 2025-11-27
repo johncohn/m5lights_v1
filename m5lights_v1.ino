@@ -1,10 +1,16 @@
 /// @file    m5lights_v1_simple.ino
 /// @brief   Ultra-Simple ESP-NOW LED Sync with 14 Patterns + Music Mode
-/// @version 3.7.0
+/// @version 3.8.0
 /// @date    2024-11-24
 /// @author  John Cohn (adapted from Mark Kriegsman)
 ///
 /// @changelog
+/// v3.8.0 (2024-11-24) - Smooth Pattern Cross-Fading
+///   - Added smooth 1-second cross-fade between patterns
+///   - Renders both old and new patterns during transition
+///   - Blends them together for professional-looking changes
+///   - Works for both manual and auto pattern changes
+///   - Minimal performance impact and memory overhead
 /// v3.7.0 (2024-11-24) - Improved Beat Detection + Beat-Reactive Patterns (Max's Request!)
 ///   - MAJOR IMPROVEMENT: Interval-based BPM calculation for stability
 ///   - Tracks time between beats instead of just counting them
@@ -152,7 +158,7 @@
 FASTLED_USING_NAMESPACE
 
 // Version info
-#define VERSION "3.7.0"
+#define VERSION "3.8.0"
 
 // Hardware config
 #define LED_PIN 32
@@ -165,6 +171,15 @@ FASTLED_USING_NAMESPACE
 #define LEADER_DELAY_MS 50  // Delay before leader shows LEDs (ms)
 
 CRGB leds[NUM_LEDS];
+CRGB ledsNext[NUM_LEDS];  // Second buffer for cross-fading
+
+// Cross-fade variables
+bool isFading = false;
+float fadeAmount = 0.0f;  // 0.0 = current pattern, 1.0 = next pattern
+uint8_t fadeFromPattern = 0;
+uint8_t fadeToPattern = 0;
+unsigned long fadeStartTime = 0;
+#define FADE_DURATION_MS 1000  // 1 second fade
 
 // Ultra-Simple Mode System  
 enum NodeMode {
@@ -934,7 +949,17 @@ void updateDisplay() {
 }
 
 void nextPattern() {
-  gCurrentPatternNumber = (gCurrentPatternNumber + 1) % ARRAY_SIZE(gPatterns);
+  // Start cross-fade to next pattern
+  fadeFromPattern = gCurrentPatternNumber;
+  fadeToPattern = (gCurrentPatternNumber + 1) % ARRAY_SIZE(gPatterns);
+  isFading = true;
+  fadeAmount = 0.0f;
+  fadeStartTime = millis();
+
+  Serial.print("Fading from pattern ");
+  Serial.print(fadeFromPattern);
+  Serial.print(" to ");
+  Serial.println(fadeToPattern);
 }
 
 // Enhanced leader timeout with rejoin logic
@@ -1052,19 +1077,76 @@ void setup() {
   Serial.println("Long press: Become Leader");
 }
 
+// Handle cross-fade rendering and blending
+void updateCrossFade() {
+  if (!isFading) return;
+
+  // Update fade progress
+  unsigned long elapsed = millis() - fadeStartTime;
+  fadeAmount = (float)elapsed / (float)FADE_DURATION_MS;
+
+  if (fadeAmount >= 1.0f) {
+    // Fade complete - switch to new pattern
+    fadeAmount = 1.0f;
+    isFading = false;
+    gCurrentPatternNumber = fadeToPattern;
+    Serial.print("Fade complete, now on pattern ");
+    Serial.println(gCurrentPatternNumber);
+  }
+}
+
+// Render current pattern (with cross-fade support)
+void renderPattern() {
+  if (isFading) {
+    // CROSS-FADE MODE: Render both patterns and blend
+
+    // Render old pattern to leds[]
+    uint8_t savedPattern = gCurrentPatternNumber;
+    gCurrentPatternNumber = fadeFromPattern;
+    gPatterns[fadeFromPattern]();
+
+    // Save old pattern result
+    CRGB ledsOld[NUM_LEDS];
+    memcpy(ledsOld, leds, sizeof(leds));
+
+    // Render new pattern to leds[]
+    gCurrentPatternNumber = fadeToPattern;
+    gPatterns[fadeToPattern]();
+
+    // Blend: leds = (old * (1-fade)) + (new * fade)
+    for (int i = 0; i < NUM_LEDS; i++) {
+      leds[i].r = ((uint16_t)ledsOld[i].r * (uint16_t)((1.0f - fadeAmount) * 255)) / 255 +
+                  ((uint16_t)leds[i].r * (uint16_t)(fadeAmount * 255)) / 255;
+      leds[i].g = ((uint16_t)ledsOld[i].g * (uint16_t)((1.0f - fadeAmount) * 255)) / 255 +
+                  ((uint16_t)leds[i].g * (uint16_t)(fadeAmount * 255)) / 255;
+      leds[i].b = ((uint16_t)ledsOld[i].b * (uint16_t)((1.0f - fadeAmount) * 255)) / 255 +
+                  ((uint16_t)leds[i].b * (uint16_t)(fadeAmount * 255)) / 255;
+    }
+
+    // Restore pattern number (in case it's used elsewhere)
+    gCurrentPatternNumber = savedPattern;
+  } else {
+    // NORMAL MODE: Just render current pattern
+    gPatterns[gCurrentPatternNumber]();
+  }
+}
+
 void loop() {
   // Reset watchdog timer
   esp_task_wdt_reset();
-  
+
   M5.update();
   handleButtons();
   handlePatternButtons();
-  
+
   unsigned long currentTime = millis();
-  
+
   // Check for leader timeout
   checkLeaderTimeout();
-  
+
+  // Update cross-fade progress
+  updateCrossFade();
+
   // If we're following a leader, don't run our own patterns
   if (leaderDataActive && (currentMode == MODE_NORMAL || currentMode == MODE_MUSIC)) {
     // Just update display and return - LEDs controlled by leader
@@ -1074,12 +1156,12 @@ void loop() {
     }
     return;
   }
-  
+
   // Run patterns based on mode
   if (currentMode == MODE_MUSIC || currentMode == MODE_MUSIC_LEADER) {
-    // Music mode - update audio and run pattern
+    // Music mode - update audio and run pattern (with cross-fade support)
     updateAudioLevel();
-    gPatterns[gCurrentPatternNumber]();
+    renderPattern();
 
     // If leader: broadcast FIRST, then wait for followers to receive/process, then show
     if (currentMode == MODE_MUSIC_LEADER) {
@@ -1098,9 +1180,9 @@ void loop() {
 
     FastLED.show();
   } else {
-    // Normal mode - just run pattern
+    // Normal mode - run pattern (with cross-fade support)
     FastLED.setBrightness(BRIGHTNESS);
-    gPatterns[gCurrentPatternNumber]();
+    renderPattern();
 
     // If leader: broadcast FIRST, then wait for followers to receive/process, then show
     if (currentMode == MODE_NORMAL_LEADER) {
