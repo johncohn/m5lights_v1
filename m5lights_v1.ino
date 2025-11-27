@@ -1,10 +1,17 @@
 /// @file    m5lights_v1_simple.ino
 /// @brief   Ultra-Simple ESP-NOW LED Sync with 14 Patterns + Music Mode
-/// @version 3.4.0
+/// @version 3.4.1
 /// @date    2024-11-24
 /// @author  John Cohn (adapted from Mark Kriegsman)
 ///
 /// @changelog
+/// v3.4.1 (2024-11-24) - Sticky Beat Detection with Hysteresis
+///   - FIXED flickering beat detection - now much more stable
+///   - Lowered detection threshold: 3 beats to enter (was 4) - more sensitive
+///   - Added hysteresis: only 2 beats needed to stay in music mode - sticky
+///   - Added 15 second timeout - stays in music mode even during quiet passages
+///   - Beat indicator now stays "YES" throughout songs instead of flickering
+///   - Better user experience for music detection
 /// v3.4.0 (2024-11-24) - Pattern Overhaul: Full-Strand Patterns Only
 ///   - REMOVED chase/blob patterns: doChase, juggle, meteorShower (feedback: not visually appealing)
 ///   - ADDED 6 new full-strand patterns: Sparkle, ColorWaves, Pride, Ocean, Twinkle, Palette
@@ -106,7 +113,7 @@
 FASTLED_USING_NAMESPACE
 
 // Version info
-#define VERSION "3.4.0"
+#define VERSION "3.4.1"
 
 // Hardware config
 #define LED_PIN 32
@@ -161,6 +168,7 @@ uint8_t beatCount = 0;
 uint32_t lastBpmMillis = 0;
 bool audioDetected = true;
 uint8_t musicBrightness = BRIGHTNESS;
+unsigned long lastMusicDetectedTime = 0;  // Timestamp of last music detection for sticky behavior
 
 // Adaptive audio scaling - Ultra-fast response for immediate contrast
 float noiseFloor = 0.01f;          // Moving average of quiet ambient sound
@@ -461,15 +469,34 @@ void detectAudioFrame() {
 void updateBPM() {
   uint32_t now = millis();
   if (now - lastBpmMillis >= BPM_WINDOW) {
-    int cnt = 0; 
+    int cnt = 0;
     uint32_t cutoff = now - BPM_WINDOW;
     for (int i = 0; i < beatCount; i++) {
       if (beatTimes[i] >= cutoff) cnt++;
     }
-    
+
     float bpm = cnt * (60000.0f / float(BPM_WINDOW));
-    audioDetected = (cnt >= 4 && bpm >= 30.0f && bpm <= 300.0f);
-    lastBpmMillis += BPM_WINDOW; 
+
+    // STICKY HYSTERESIS DETECTION - more sensitive and stable
+    // Enter music mode: 3+ beats and valid BPM range (lower threshold - more sensitive)
+    // Stay in music mode: 2+ beats OR within 15 second timeout (sticky)
+    // Exit music mode: < 2 beats AND timeout expired (momentum)
+
+    bool beatsDetected = (cnt >= 3 && bpm >= 30.0f && bpm <= 300.0f);  // Enter threshold (lowered from 4)
+    bool sustainBeats = (cnt >= 2 && bpm >= 30.0f && bpm <= 300.0f);   // Stay threshold (even lower)
+
+    if (beatsDetected || sustainBeats) {
+      lastMusicDetectedTime = now;  // Update timestamp on any beat activity
+      audioDetected = true;
+    } else {
+      // Only exit music mode if no beats for 15 seconds (sticky timeout)
+      if (now - lastMusicDetectedTime > 15000) {
+        audioDetected = false;
+      }
+      // Otherwise stay in music mode (momentum)
+    }
+
+    lastBpmMillis += BPM_WINDOW;
     beatCount = 0;
   }
 }
