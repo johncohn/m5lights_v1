@@ -1,10 +1,15 @@
 /// @file    m5lights_v1_simple.ino
 /// @brief   Ultra-Simple ESP-NOW LED Sync with 14 Patterns + Music Mode
-/// @version 3.4.1
+/// @version 3.4.2
 /// @date    2024-11-24
 /// @author  John Cohn (adapted from Mark Kriegsman)
 ///
 /// @changelog
+/// v3.4.2 (2024-11-24) - Ultra-Sticky Beat Detection (Even More Sensitive)
+///   - ULTRA-LOW thresholds: 2 beats to enter, 1 beat to stay (was 3/2)
+///   - Increased timeout to 20 seconds (was 15) - maximum stickiness
+///   - Fixes persistent flickering - now requires minimal beat activity to stay YES
+///   - Handles even quiet/subtle rhythmic music
 /// v3.4.1 (2024-11-24) - Sticky Beat Detection with Hysteresis
 ///   - FIXED flickering beat detection - now much more stable
 ///   - Lowered detection threshold: 3 beats to enter (was 4) - more sensitive
@@ -113,7 +118,7 @@
 FASTLED_USING_NAMESPACE
 
 // Version info
-#define VERSION "3.4.1"
+#define VERSION "3.4.2"
 
 // Hardware config
 #define LED_PIN 32
@@ -477,23 +482,23 @@ void updateBPM() {
 
     float bpm = cnt * (60000.0f / float(BPM_WINDOW));
 
-    // STICKY HYSTERESIS DETECTION - more sensitive and stable
-    // Enter music mode: 3+ beats and valid BPM range (lower threshold - more sensitive)
-    // Stay in music mode: 2+ beats OR within 15 second timeout (sticky)
-    // Exit music mode: < 2 beats AND timeout expired (momentum)
+    // ULTRA-STICKY HYSTERESIS DETECTION - very sensitive and stable
+    // Enter music mode: 2+ beats (very low threshold - highly sensitive)
+    // Stay in music mode: 1+ beat OR within 20 second timeout (ultra sticky)
+    // Exit music mode: 0 beats AND timeout expired (strong momentum)
 
-    bool beatsDetected = (cnt >= 3 && bpm >= 30.0f && bpm <= 300.0f);  // Enter threshold (lowered from 4)
-    bool sustainBeats = (cnt >= 2 && bpm >= 30.0f && bpm <= 300.0f);   // Stay threshold (even lower)
+    bool beatsDetected = (cnt >= 2 && bpm >= 30.0f && bpm <= 300.0f);  // Enter threshold - very low
+    bool sustainBeats = (cnt >= 1 && bpm >= 30.0f && bpm <= 300.0f);   // Stay threshold - minimal
 
     if (beatsDetected || sustainBeats) {
       lastMusicDetectedTime = now;  // Update timestamp on any beat activity
       audioDetected = true;
     } else {
-      // Only exit music mode if no beats for 15 seconds (sticky timeout)
-      if (now - lastMusicDetectedTime > 15000) {
+      // Only exit music mode if no beats for 20 seconds (ultra-sticky timeout)
+      if (now - lastMusicDetectedTime > 20000) {
         audioDetected = false;
       }
-      // Otherwise stay in music mode (momentum)
+      // Otherwise stay in music mode (strong momentum)
     }
 
     lastBpmMillis += BPM_WINDOW;
