@@ -1,10 +1,13 @@
 /// @file    m5lights_v1_simple.ino
 /// @brief   Ultra-Simple ESP-NOW LED Sync with 14 Patterns + Music Mode
-/// @version 3.6.0
+/// @version 3.6.1
 /// @date    2024-11-24
 /// @author  John Cohn (adapted from Mark Kriegsman)
 ///
 /// @changelog
+/// v3.6.1 (2024-11-24) - Faster Decay (Max's Request!)
+///   - Changed decay time from 0.5s to 0.25s (2x faster falloff)
+///   - Even more responsive to rapid beat changes
 /// v3.6.0 (2024-11-24) - Beat Threshold and Power Curve (Max's Request!)
 ///   - Added BRIGHTNESS_THRESHOLD to require more pronounced beats for brightness boost
 ///   - Applied power curve (exponent 2.0) to make quieter sounds have less impact
@@ -137,7 +140,7 @@
 FASTLED_USING_NAMESPACE
 
 // Version info
-#define VERSION "3.6.0"
+#define VERSION "3.6.1"
 
 // Hardware config
 #define LED_PIN 32
@@ -197,7 +200,7 @@ unsigned long lastMusicDetectedTime = 0;  // Timestamp of last music detection f
 // Brightness decay envelope for smoother audio response
 float brightnessEnvelope = BRIGHTNESS;  // Current decaying brightness level
 unsigned long lastBrightnessUpdate = 0;  // For calculating decay time delta
-#define BRIGHTNESS_DECAY_SECONDS 0.5f    // Time constant for exponential decay (63% falloff)
+#define BRIGHTNESS_DECAY_SECONDS 0.25f   // Time constant for exponential decay (63% falloff)
 #define BRIGHTNESS_THRESHOLD 0.35f       // Audio must exceed this level to boost brightness (0.0-1.0)
 #define BRIGHTNESS_POWER_CURVE 2.0f      // Power curve exponent (1.0=linear, 2.0=square, 3.0=cube)
 
