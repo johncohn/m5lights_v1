@@ -1,12 +1,15 @@
 /// @file    m5lights_v1_simple.ino
 /// @brief   Ultra-Simple ESP-NOW LED Sync with 14 Patterns + Music Mode
-/// @version 3.8.0
+/// @version 3.8.1
 /// @date    2024-11-24
 /// @author  John Cohn (adapted from Mark Kriegsman)
 ///
 /// @changelog
+/// v3.8.1 (2024-11-24) - Extended Cross-Fade Time
+///   - Changed fade duration from 1 second to 3 seconds
+///   - Longer, more gradual transitions between patterns
 /// v3.8.0 (2024-11-24) - Smooth Pattern Cross-Fading
-///   - Added smooth 1-second cross-fade between patterns
+///   - Added smooth cross-fade between patterns
 ///   - Renders both old and new patterns during transition
 ///   - Blends them together for professional-looking changes
 ///   - Works for both manual and auto pattern changes
@@ -158,7 +161,7 @@
 FASTLED_USING_NAMESPACE
 
 // Version info
-#define VERSION "3.8.0"
+#define VERSION "3.8.1"
 
 // Hardware config
 #define LED_PIN 32
@@ -179,7 +182,7 @@ float fadeAmount = 0.0f;  // 0.0 = current pattern, 1.0 = next pattern
 uint8_t fadeFromPattern = 0;
 uint8_t fadeToPattern = 0;
 unsigned long fadeStartTime = 0;
-#define FADE_DURATION_MS 1000  // 1 second fade
+#define FADE_DURATION_MS 3000  // 3 second fade
 
 // Ultra-Simple Mode System  
 enum NodeMode {
