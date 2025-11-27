@@ -1,10 +1,18 @@
 /// @file    m5lights_v1_simple.ino
 /// @brief   Ultra-Simple ESP-NOW LED Sync with 14 Patterns + Music Mode
-/// @version 3.6.2
+/// @version 3.7.0
 /// @date    2024-11-24
 /// @author  John Cohn (adapted from Mark Kriegsman)
 ///
 /// @changelog
+/// v3.7.0 (2024-11-24) - Improved Beat Detection + Beat-Reactive Patterns (Max's Request!)
+///   - MAJOR IMPROVEMENT: Interval-based BPM calculation for stability
+///   - Tracks time between beats instead of just counting them
+///   - Uses median filtering to find consistent beat interval
+///   - Much more stable BPM that locks onto the actual tempo
+///   - Added beat-reactive mode (toggle with long press on B button)
+///   - Patterns respond to beats when enabled: sparkle, glitter, lightning, BPM, aurora
+///   - Moved Rainbow+Glitter pattern away from Rainbow in the list
 /// v3.6.2 (2024-11-24) - Smooth BPM Display (Max's Request!)
 ///   - Added smoothed BPM value to screen display
 ///   - BPM varies smoothly instead of jumping every 5 seconds
@@ -144,7 +152,7 @@
 FASTLED_USING_NAMESPACE
 
 // Version info
-#define VERSION "3.6.2"
+#define VERSION "3.7.0"
 
 // Hardware config
 #define LED_PIN 32
@@ -196,11 +204,15 @@ bool beatDetected = false;
 bool prevAbove = false;
 uint32_t beatTimes[50];
 uint8_t beatCount = 0;
+uint32_t beatIntervals[50];         // NEW: Track intervals between beats
+uint8_t intervalCount = 0;          // NEW: Number of intervals stored
+uint32_t lastBeatTime = 0;          // NEW: Timestamp of last detected beat
 uint32_t lastBpmMillis = 0;
 bool audioDetected = true;
 uint8_t musicBrightness = BRIGHTNESS;
 unsigned long lastMusicDetectedTime = 0;  // Timestamp of last music detection for sticky behavior
 float currentBPM = 0.0f;                   // Smoothed BPM value for display
+bool beatReactive = false;                 // NEW: Whether patterns should respond to beats
 
 // Brightness decay envelope for smoother audio response
 float brightnessEnvelope = BRIGHTNESS;  // Current decaying brightness level
@@ -263,14 +275,14 @@ void paletteBlend();
 // Pattern list and names
 typedef void (*SimplePatternList[])();
 SimplePatternList gPatterns = {
-  rainbow, rainbowWithGlitter, confetti, bpm, fire, lightningStorm,
-  plasmaField, auroraWaves, sparkle, colorWaves, pride, ocean,
+  rainbow, confetti, bpm, fire, lightningStorm, plasmaField,
+  auroraWaves, sparkle, rainbowWithGlitter, colorWaves, pride, ocean,
   twinkle, paletteBlend
 };
 
 const char* patternNames[] = {
-  "Rainbow", "Rainbow+Glitter", "Confetti", "BPM", "Fire", "Lightning",
-  "Plasma", "Aurora", "Sparkle", "ColorWaves", "Pride", "Ocean",
+  "Rainbow", "Confetti", "BPM", "Fire", "Lightning", "Plasma",
+  "Aurora", "Sparkle", "Rainbow+Glitter", "ColorWaves", "Pride", "Ocean",
   "Twinkle", "Palette"
 };
 
@@ -494,12 +506,30 @@ void detectAudioFrame() {
   bool above = (musicLevel > beatThreshold);
   if (above && !prevAbove) {
     uint32_t t = millis();
+
+    // Track beat times (for legacy BPM calculation)
     if (beatCount < 50) {
       beatTimes[beatCount++] = t;
-    } else { 
-      memmove(beatTimes, beatTimes + 1, 49 * sizeof(uint32_t)); 
-      beatTimes[49] = t; 
+    } else {
+      memmove(beatTimes, beatTimes + 1, 49 * sizeof(uint32_t));
+      beatTimes[49] = t;
     }
+
+    // NEW: Track beat intervals for improved BPM calculation
+    if (lastBeatTime > 0) {
+      uint32_t interval = t - lastBeatTime;
+      // Only track reasonable intervals (150ms to 2000ms = 30-400 BPM)
+      if (interval >= 150 && interval <= 2000) {
+        if (intervalCount < 50) {
+          beatIntervals[intervalCount++] = interval;
+        } else {
+          memmove(beatIntervals, beatIntervals + 1, 49 * sizeof(uint32_t));
+          beatIntervals[49] = interval;
+        }
+      }
+    }
+    lastBeatTime = t;
+
     beatDetected = true;
   } else if (!above) {
     beatDetected = false;
@@ -507,29 +537,71 @@ void detectAudioFrame() {
   prevAbove = above;
 }
 
+// Helper function to find median interval (for stable BPM calculation)
+uint32_t getMedianInterval() {
+  if (intervalCount == 0) return 0;
+
+  // Copy intervals to temp array for sorting
+  uint32_t temp[50];
+  memcpy(temp, beatIntervals, intervalCount * sizeof(uint32_t));
+
+  // Simple bubble sort (small array, not performance critical)
+  for (int i = 0; i < intervalCount - 1; i++) {
+    for (int j = 0; j < intervalCount - i - 1; j++) {
+      if (temp[j] > temp[j + 1]) {
+        uint32_t swap = temp[j];
+        temp[j] = temp[j + 1];
+        temp[j + 1] = swap;
+      }
+    }
+  }
+
+  // Return median
+  if (intervalCount % 2 == 0) {
+    return (temp[intervalCount/2 - 1] + temp[intervalCount/2]) / 2;
+  } else {
+    return temp[intervalCount/2];
+  }
+}
+
 void updateBPM() {
   uint32_t now = millis();
   if (now - lastBpmMillis >= BPM_WINDOW) {
+    // Count beats in window (for music detection)
     int cnt = 0;
     uint32_t cutoff = now - BPM_WINDOW;
     for (int i = 0; i < beatCount; i++) {
       if (beatTimes[i] >= cutoff) cnt++;
     }
 
-    float bpm = cnt * (60000.0f / float(BPM_WINDOW));
-
-    // SMOOTH BPM - exponential smoothing for display (80% old + 20% new)
-    // This prevents BPM from jumping around on the display
-    if (currentBPM == 0.0f) {
-      currentBPM = bpm;  // First reading, no smoothing
-    } else {
-      currentBPM = currentBPM * 0.8f + bpm * 0.2f;
+    // NEW: INTERVAL-BASED BPM CALCULATION
+    // Instead of just counting beats, find the most common interval
+    // This locks onto the actual tempo instead of fluctuating
+    float bpm = 0.0f;
+    if (intervalCount >= 3) {  // Need at least 3 intervals for median
+      uint32_t medianInterval = getMedianInterval();
+      if (medianInterval > 0) {
+        bpm = 60000.0f / float(medianInterval);  // Convert interval to BPM
+      }
+    } else if (cnt >= 2) {
+      // Fallback to count-based if not enough intervals yet
+      bpm = cnt * (60000.0f / float(BPM_WINDOW));
     }
 
-    // DEBUG: Print beat count to help diagnose detection issues
+    // VERY AGGRESSIVE SMOOTHING - 90% old + 10% new for rock-solid display
+    // This prevents BPM from jumping around on the display
+    if (currentBPM == 0.0f || currentBPM < 10.0f) {
+      currentBPM = bpm;  // First reading or reset, no smoothing
+    } else if (bpm > 0.0f) {
+      currentBPM = currentBPM * 0.9f + bpm * 0.1f;
+    }
+
+    // DEBUG: Print beat info to help diagnose detection issues
     Serial.print("BPM Check: beats=");
     Serial.print(cnt);
-    Serial.print(", bpm=");
+    Serial.print(", intervals=");
+    Serial.print(intervalCount);
+    Serial.print(", rawBPM=");
     Serial.print(bpm);
     Serial.print(", smoothed=");
     Serial.print(currentBPM);
@@ -541,8 +613,8 @@ void updateBPM() {
     // Stay in music mode: 1+ beat OR within 20 second timeout (ultra sticky)
     // Exit music mode: 0 beats AND timeout expired (strong momentum)
 
-    bool beatsDetected = (cnt >= 2 && bpm >= 30.0f && bpm <= 300.0f);  // Enter threshold - very low
-    bool sustainBeats = (cnt >= 1 && bpm >= 30.0f && bpm <= 300.0f);   // Stay threshold - minimal
+    bool beatsDetected = (cnt >= 2 && currentBPM >= 30.0f && currentBPM <= 300.0f);  // Enter threshold
+    bool sustainBeats = (cnt >= 1 && currentBPM >= 30.0f && currentBPM <= 300.0f);   // Stay threshold
 
     if (beatsDetected || sustainBeats) {
       lastMusicDetectedTime = now;  // Update timestamp on any beat activity
@@ -551,6 +623,7 @@ void updateBPM() {
       // Only exit music mode if no beats for 20 seconds (ultra-sticky timeout)
       if (now - lastMusicDetectedTime > 20000) {
         audioDetected = false;
+        currentBPM = 0.0f;  // Reset BPM when exiting music mode
       }
       // Otherwise stay in music mode (strong momentum)
     }
@@ -785,11 +858,11 @@ void handlePatternButtons() {
       Serial.println(gCurrentPatternNumber);
     }
   } else if (bBtnPressed && !bLongHandled && (millis() - bBtnPressTime >= 1000)) {
-    // Long press: toggle auto-advance
-    autoAdvancePatterns = !autoAdvancePatterns;
+    // Long press: toggle beat-reactive mode
+    beatReactive = !beatReactive;
     bLongHandled = true;
-    Serial.print("Auto-advance patterns: ");
-    Serial.println(autoAdvancePatterns ? "ON" : "OFF");
+    Serial.print("Beat-reactive mode: ");
+    Serial.println(beatReactive ? "ON" : "OFF");
   }
   
   bBtnWasPressed = bBtnPressed;
@@ -853,6 +926,7 @@ void updateDisplay() {
     M5.Display.drawString("Audio: " + String((int)(audioLevel * 100)) + "%", 10, 65);
     M5.Display.drawString("Beat: " + String(beatDetected ? "YES" : "NO"), 10, 80);
     M5.Display.drawString("BPM: " + String((int)currentBPM), 10, 95);
+    M5.Display.drawString("BeatFX: " + String(beatReactive ? "ON" : "OFF"), 10, 110);
   } else {
     String patternDisplay = String(gCurrentPatternNumber) + ": " + String(patternNames[gCurrentPatternNumber]);
     M5.Display.drawString(patternDisplay, 10, 50);
@@ -1073,8 +1147,15 @@ void rainbow() {
 
 void rainbowWithGlitter() {
   rainbow();
+  // Normal glitter
   if (random8() < 80) {
     leds[random16(NUM_LEDS)] += CRGB::White;
+  }
+  // BEAT-REACTIVE: Extra bright glitter burst on beat
+  if (beatReactive && beatDetected) {
+    for (int i = 0; i < 20; i++) {
+      leds[random16(NUM_LEDS)] = CRGB::White;
+    }
   }
 }
 
@@ -1085,11 +1166,22 @@ void confetti() {
 }
 
 void bpm() {
+  static bool direction = false;  // false = forward, true = reverse
+  static bool lastBeatState = false;
+
+  // BEAT-REACTIVE: Reverse direction on beat
+  if (beatReactive && beatDetected && !lastBeatState) {
+    direction = !direction;  // Toggle direction on rising edge of beat
+  }
+  lastBeatState = beatDetected;
+
   uint8_t BeatsPerMinute = 62;
   CRGBPalette16 palette = PartyColors_p;
   uint8_t beat = beatsin8(BeatsPerMinute, 64, 255);
+
   for (int i = 0; i < NUM_LEDS; i++) {
-    leds[i] = ColorFromPalette(palette, gHue + (i * 2), beat - gHue + (i * 10));
+    int index = direction ? (NUM_LEDS - 1 - i) : i;  // Reverse index if direction is true
+    leds[index] = ColorFromPalette(palette, gHue + (i * 2), beat - gHue + (i * 10));
   }
 }
 
@@ -1122,21 +1214,30 @@ void fire() {
 void lightningStorm() {
   static unsigned long lastStrike = 0;
   unsigned long currentTime = millis();
-  
+
   for (int i = 0; i < NUM_LEDS; i++) {
     leds[i].nscale8(220);
     leds[i] += CRGB(0, 0, 15);
   }
-  
-  if (currentTime - lastStrike > random16(100, 2000)) {
+
+  // BEAT-REACTIVE: Trigger strikes on beat, otherwise random timing
+  bool shouldStrike = false;
+  if (beatReactive && beatDetected) {
+    shouldStrike = true;  // Always strike on beat
+    lastStrike = currentTime;  // Reset timer
+  } else if (currentTime - lastStrike > random16(100, 2000)) {
+    shouldStrike = true;  // Random strike timing when not beat-reactive
     lastStrike = currentTime;
+  }
+
+  if (shouldStrike) {
     int strikePos = random16(NUM_LEDS - 30);
     int strikeLength = random8(10, 25);
-    
+
     for (int i = strikePos; i < strikePos + strikeLength && i < NUM_LEDS; i++) {
       leds[i] = CRGB(255, 255, 255);
     }
-    
+
     if (random8() < 150) {
       int secondaryPos = strikePos + random8(-5, 5);
       int secondaryLen = random8(5, 12);
@@ -1171,22 +1272,30 @@ void plasmaField() {
 void auroraWaves() {
   static uint16_t wave1_pos = 0, wave2_pos = 0, wave3_pos = 0;
   static uint8_t auroraHue = 96;
-  
+  static bool lastBeatState = false;
+
+  // BEAT-REACTIVE: Shift hue on beat for color changes
+  if (beatReactive && beatDetected && !lastBeatState) {
+    auroraHue += 30;  // Jump to new color on beat
+    if (auroraHue > 140) auroraHue = 80;  // Wrap around
+  }
+  lastBeatState = beatDetected;
+
   wave1_pos += 2;
   wave2_pos += 3;
   wave3_pos += 1;
-  
+
   fill_solid(leds, NUM_LEDS, CRGB::Black);
-  
+
   for (int i = 0; i < NUM_LEDS; i++) {
     uint8_t wave1 = sin8(wave1_pos + i * 4);
     uint8_t wave2 = sin8(wave2_pos + i * 6 + 85);
     uint8_t wave3 = sin8(wave3_pos + i * 2 + 170);
-    
+
     uint8_t hue1 = auroraHue + sin8(i * 8)/8;
     uint8_t hue2 = auroraHue + 40;
     uint8_t hue3 = auroraHue + 80;
-    
+
     if (wave1 > 100) {
       leds[i] += CHSV(hue1, 255, (wave1-100)*2);
     }
@@ -1197,8 +1306,9 @@ void auroraWaves() {
       leds[i] += CHSV(hue3, 200, (wave3-140)*3);
     }
   }
-  
-  if (random8() < 2) {
+
+  // Gradual color drift when not beat-reactive
+  if (!beatReactive && random8() < 2) {
     auroraHue += random8(5) - 2;
     auroraHue = constrain(auroraHue, 80, 140);
   }
@@ -1296,7 +1406,13 @@ void sparkle() {
   fadeToBlackBy(leds, NUM_LEDS, 30);
 
   // Add multiple sparkles per frame
-  for (int i = 0; i < 15; i++) {
+  int sparkleCount = 15;
+  // BEAT-REACTIVE: More and brighter sparkles on beat
+  if (beatReactive && beatDetected) {
+    sparkleCount = 40;  // Much more sparkles on beat
+  }
+
+  for (int i = 0; i < sparkleCount; i++) {
     int pos = random16(NUM_LEDS);
     leds[pos] = CHSV(random8(), 200, 255);
   }
