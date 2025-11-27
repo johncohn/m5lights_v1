@@ -1,10 +1,15 @@
 /// @file    m5lights_v1_simple.ino
 /// @brief   Ultra-Simple ESP-NOW LED Sync with 14 Patterns + Music Mode
-/// @version 3.5.0
+/// @version 3.5.1
 /// @date    2024-11-24
 /// @author  John Cohn (adapted from Mark Kriegsman)
 ///
 /// @changelog
+/// v3.5.1 (2024-11-24) - Faster Exponential Decay
+///   - Changed decay time from 2.0s to 0.5s (much faster response)
+///   - Changed from linear to exponential/Gaussian decay (more natural)
+///   - Exponential decay: fast falloff initially, slows as it approaches target
+///   - Creates more organic, musical feel
 /// v3.5.0 (2024-11-24) - Smooth Brightness Decay Envelope (Max's Request!)
 ///   - MAJOR IMPROVEMENT: Added smooth decay to music-reactive brightness
 ///   - Fast attack: Brightness instantly jumps up on peaks
@@ -126,7 +131,7 @@
 FASTLED_USING_NAMESPACE
 
 // Version info
-#define VERSION "3.5.0"
+#define VERSION "3.5.1"
 
 // Hardware config
 #define LED_PIN 32
@@ -186,7 +191,7 @@ unsigned long lastMusicDetectedTime = 0;  // Timestamp of last music detection f
 // Brightness decay envelope for smoother audio response
 float brightnessEnvelope = BRIGHTNESS;  // Current decaying brightness level
 unsigned long lastBrightnessUpdate = 0;  // For calculating decay time delta
-#define BRIGHTNESS_DECAY_SECONDS 2.0f    // Time for brightness to decay from max to min
+#define BRIGHTNESS_DECAY_SECONDS 0.5f    // Time constant for exponential decay (63% falloff)
 
 // Adaptive audio scaling - Ultra-fast response for immediate contrast
 float noiseFloor = 0.01f;          // Moving average of quiet ambient sound
@@ -550,7 +555,7 @@ void updateAudioLevel() {
   float targetBrightness = 1.0f + (normalizedLevel * 24.0f);
 
   // SMOOTH DECAY ENVELOPE - requested by Max!
-  // Fast attack (instant response to peaks), slow decay (smooth falloff over 2 seconds)
+  // Fast attack (instant response to peaks), exponential decay (0.5s time constant)
   unsigned long now = millis();
   float timeDelta = (now - lastBrightnessUpdate) / 1000.0f;  // Convert to seconds
   lastBrightnessUpdate = now;
@@ -559,15 +564,12 @@ void updateAudioLevel() {
     // ATTACK: New peak is higher - instantly jump to it
     brightnessEnvelope = targetBrightness;
   } else {
-    // DECAY: Smoothly fall off over BRIGHTNESS_DECAY_SECONDS
-    // Calculate how much to decay per second to go from max(25) to min(1) in decay time
-    float decayRate = 24.0f / BRIGHTNESS_DECAY_SECONDS;  // Brightness units per second
-    brightnessEnvelope -= decayRate * timeDelta;
-
-    // Don't decay below the current target (new peak can interrupt decay)
-    if (brightnessEnvelope < targetBrightness) {
-      brightnessEnvelope = targetBrightness;
-    }
+    // GAUSSIAN/EXPONENTIAL DECAY: Natural smooth falloff
+    // Uses time constant tau (BRIGHTNESS_DECAY_SECONDS)
+    // Formula: envelope = target + (envelope - target) * exp(-timeDelta / tau)
+    float tau = BRIGHTNESS_DECAY_SECONDS;
+    float decayFactor = exp(-timeDelta / tau);
+    brightnessEnvelope = targetBrightness + (brightnessEnvelope - targetBrightness) * decayFactor;
 
     // Don't go below minimum brightness
     if (brightnessEnvelope < 1.0f) {
