@@ -1,10 +1,14 @@
 /// @file    m5lights_v1_simple.ino
 /// @brief   Ultra-Simple ESP-NOW LED Sync with 14 Patterns + Music Mode
-/// @version 3.6.1
+/// @version 3.6.2
 /// @date    2024-11-24
 /// @author  John Cohn (adapted from Mark Kriegsman)
 ///
 /// @changelog
+/// v3.6.2 (2024-11-24) - Smooth BPM Display (Max's Request!)
+///   - Added smoothed BPM value to screen display
+///   - BPM varies smoothly instead of jumping every 5 seconds
+///   - Shows current tempo in music mode
 /// v3.6.1 (2024-11-24) - Faster Decay (Max's Request!)
 ///   - Changed decay time from 0.5s to 0.25s (2x faster falloff)
 ///   - Even more responsive to rapid beat changes
@@ -140,7 +144,7 @@
 FASTLED_USING_NAMESPACE
 
 // Version info
-#define VERSION "3.6.1"
+#define VERSION "3.6.2"
 
 // Hardware config
 #define LED_PIN 32
@@ -196,6 +200,7 @@ uint32_t lastBpmMillis = 0;
 bool audioDetected = true;
 uint8_t musicBrightness = BRIGHTNESS;
 unsigned long lastMusicDetectedTime = 0;  // Timestamp of last music detection for sticky behavior
+float currentBPM = 0.0f;                   // Smoothed BPM value for display
 
 // Brightness decay envelope for smoother audio response
 float brightnessEnvelope = BRIGHTNESS;  // Current decaying brightness level
@@ -513,11 +518,21 @@ void updateBPM() {
 
     float bpm = cnt * (60000.0f / float(BPM_WINDOW));
 
+    // SMOOTH BPM - exponential smoothing for display (80% old + 20% new)
+    // This prevents BPM from jumping around on the display
+    if (currentBPM == 0.0f) {
+      currentBPM = bpm;  // First reading, no smoothing
+    } else {
+      currentBPM = currentBPM * 0.8f + bpm * 0.2f;
+    }
+
     // DEBUG: Print beat count to help diagnose detection issues
     Serial.print("BPM Check: beats=");
     Serial.print(cnt);
     Serial.print(", bpm=");
     Serial.print(bpm);
+    Serial.print(", smoothed=");
+    Serial.print(currentBPM);
     Serial.print(", audioDetected=");
     Serial.println(audioDetected ? "YES" : "NO");
 
@@ -837,6 +852,7 @@ void updateDisplay() {
     M5.Display.drawString(patternDisplay, 10, 50);
     M5.Display.drawString("Audio: " + String((int)(audioLevel * 100)) + "%", 10, 65);
     M5.Display.drawString("Beat: " + String(beatDetected ? "YES" : "NO"), 10, 80);
+    M5.Display.drawString("BPM: " + String((int)currentBPM), 10, 95);
   } else {
     String patternDisplay = String(gCurrentPatternNumber) + ": " + String(patternNames[gCurrentPatternNumber]);
     M5.Display.drawString(patternDisplay, 10, 50);
