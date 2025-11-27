@@ -1,10 +1,13 @@
 /// @file    m5lights_v1_simple.ino
 /// @brief   Ultra-Simple ESP-NOW LED Sync with 14 Patterns + Music Mode
-/// @version 3.8.1
+/// @version 3.8.2
 /// @date    2024-11-24
 /// @author  John Cohn (adapted from Mark Kriegsman)
 ///
 /// @changelog
+/// v3.8.2 (2024-11-24) - Longer Pattern Duration
+///   - Changed auto-advance from 15 seconds to 30 seconds (2x longer)
+///   - Patterns now stay visible longer for better enjoyment
 /// v3.8.1 (2024-11-24) - Extended Cross-Fade Time
 ///   - Changed fade duration from 1 second to 3 seconds
 ///   - Longer, more gradual transitions between patterns
@@ -161,7 +164,7 @@
 FASTLED_USING_NAMESPACE
 
 // Version info
-#define VERSION "3.8.1"
+#define VERSION "3.8.2"
 
 // Hardware config
 #define LED_PIN 32
@@ -1211,8 +1214,8 @@ void loop() {
     lastDisplayUpdate = currentTime;
   }
   
-  // Auto-advance patterns every 15 seconds in all modes (if enabled)
-  if (autoAdvancePatterns && currentTime - lastPatternChange > 15000) {
+  // Auto-advance patterns every 30 seconds in all modes (if enabled)
+  if (autoAdvancePatterns && currentTime - lastPatternChange > 30000) {
     nextPattern();
     lastPatternChange = currentTime;
   }
