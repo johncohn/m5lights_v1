@@ -189,7 +189,7 @@ FASTLED_USING_NAMESPACE
 #define CHIPSET WS2811
 
 // Leader sync delay - adjust to match follower display timing
-#define LEADER_DELAY_MS 50  // Delay before leader shows LEDs (ms)
+#define LEADER_DELAY_MS 10  // Delay before leader shows LEDs (ms) - reduced for smoother animation
 
 CRGB leds[NUM_LEDS];
 CRGB ledsNext[NUM_LEDS];  // Second buffer for cross-fading
@@ -363,9 +363,9 @@ unsigned long lastBrightnessUpdate = 0;  // For calculating decay time delta
 #define BRIGHTNESS_MAX 30                // Maximum brightness - slightly higher for visible pulsing
 
 // Speed envelope for dramatic beat-reactive speed changes
-float speedEnvelope = 1.0f;              // Current speed multiplier (1.0 = normal, 2.5 = boosted)
+float speedEnvelope = 1.0f;              // Current speed multiplier (1.0 = normal, 3.5 = boosted)
 unsigned long lastSpeedUpdate = 0;       // For calculating decay time delta
-#define SPEED_BOOST_MULTIPLIER 2.5f      // How much to boost speed on beat (2.5x = very noticeable)
+#define SPEED_BOOST_MULTIPLIER 3.5f      // How much to boost speed on beat (3.5x = very dramatic!)
 
 // Adaptive audio scaling - Ultra-fast response for immediate contrast
 float noiseFloor = 0.01f;          // Moving average of quiet ambient sound
@@ -466,10 +466,29 @@ float getBeatSpeedMultiplier() {
 }
 
 // Get speed multiplier from envelope for dramatic beat-reactive speed changes
-// Returns 1.0x (normal) to 2.5x (boosted) with smooth decay
+// Returns 1.0x (normal) to 3.5x (boosted) with smooth decay
 float getSpeedMultiplier() {
   if (!audioDetected) return 1.0f;  // No music, use normal speed
   return speedEnvelope;  // Use the globally tracked speed envelope
+}
+
+// Get beat-reactive brightness scale for music mode patterns (0.1 to 1.0)
+// Applied BEFORE gamma correction to preserve dark gaps
+// Only affects music mode - normal mode always returns 1.0
+float getMusicBeatBrightnessScale() {
+  if (currentMode != MODE_MUSIC && currentMode != MODE_MUSIC_LEADER) {
+    return 1.0f;  // Normal mode - no scaling
+  }
+
+  if (!audioDetected) {
+    return 0.3f;  // Dim when no sound detected
+  }
+
+  // Map brightnessEnvelope (18-30) to VERY dramatic range (0.1-1.0)
+  // Quiet/between beats: 0.1, Loud beats: 1.0
+  float normalized = (brightnessEnvelope - (float)BRIGHTNESS_MIN) / (float)(BRIGHTNESS_MAX - BRIGHTNESS_MIN);
+  float scale = 0.1f + normalized * 0.9f;
+  return constrain(scale, 0.1f, 1.0f);
 }
 
 // ESP-NOW callbacks
@@ -895,7 +914,9 @@ void updateAudioLevel() {
   }
 
   musicBrightness = (uint8_t)brightnessEnvelope;
-  FastLED.setBrightness(musicBrightness);
+  // NOTE: We don't set FastLED.setBrightness() here anymore!
+  // Instead, patterns apply brightness scaling BEFORE gamma in music mode
+  // This keeps global brightness constant and preserves dark gaps
 }
 
 // Button interrupt handler
@@ -1368,6 +1389,7 @@ void loop() {
   if (currentMode == MODE_MUSIC || currentMode == MODE_MUSIC_LEADER) {
     // Music mode - update audio and run pattern (with cross-fade support)
     updateAudioLevel();
+    FastLED.setBrightness(BRIGHTNESS);  // Keep global brightness constant - patterns handle beat scaling
     renderPattern();
 
     // If leader: broadcast FIRST, then wait for followers to receive/process, then show
@@ -1376,16 +1398,20 @@ void loop() {
       if (currentTime - lastBroadcast > BROADCAST_INTERVAL_MS) {
         broadcastLEDData();
         lastBroadcast = currentTime;
-        delay(LEADER_DELAY_MS);  // Wait for followers to receive and process
+        // NO MORE BLOCKING DELAY! Use non-blocking check below instead
       } else if (currentTime - lastSkipLog > 5000) {
         Serial.print("[LEADER] Skipping broadcast (too soon): ");
         Serial.print(currentTime - lastBroadcast);
         Serial.println("ms since last");
         lastSkipLog = currentTime;
       }
+      // Non-blocking wait: only show if enough time has passed since last broadcast
+      if (currentTime - lastBroadcast >= LEADER_DELAY_MS) {
+        FastLED.show();
+      }
+    } else {
+      FastLED.show();  // Non-leader: show immediately
     }
-
-    FastLED.show();
   } else {
     // Normal mode - run pattern (with cross-fade support)
     FastLED.setBrightness(BRIGHTNESS);
@@ -1397,16 +1423,20 @@ void loop() {
       if (currentTime - lastBroadcast > BROADCAST_INTERVAL_MS) {
         broadcastLEDData();
         lastBroadcast = currentTime;
-        delay(LEADER_DELAY_MS);  // Wait for followers to receive and process
+        // NO MORE BLOCKING DELAY! Use non-blocking check below instead
       } else if (currentTime - lastSkipLog > 5000) {
         Serial.print("[LEADER] Skipping broadcast (too soon): ");
         Serial.print(currentTime - lastBroadcast);
         Serial.println("ms since last");
         lastSkipLog = currentTime;
       }
+      // Non-blocking wait: only show if enough time has passed since last broadcast
+      if (currentTime - lastBroadcast >= LEADER_DELAY_MS) {
+        FastLED.show();
+      }
+    } else {
+      FastLED.show();  // Non-leader: show immediately
     }
-
-    FastLED.show();
   }
   
   // Update display periodically
@@ -1482,12 +1512,22 @@ void solidColor() {
   // Convert current hue to RGB
   byte r, g, b;
   hsvToRgb(currentHue, 255, 255, &r, &g, &b);
+
+  // Apply beat brightness scaling in music mode (BEFORE gamma!)
+  float beatScale = getMusicBeatBrightnessScale();
+  r = (byte)(r * beatScale);
+  g = (byte)(g * beatScale);
+  b = (byte)(b * beatScale);
+
+  // Apply gamma correction (MUST be last!)
+  r = gammaTable[r];
+  g = gammaTable[g];
+  b = gammaTable[b];
   currentColor = CRGB(r, g, b);
 
-  // Fill all LEDs with current color and apply gamma correction
-  // Gamma must be applied LAST - no brightness scaling after gamma!
+  // Fill all LEDs with processed color
   for (int i = 0; i < NUM_LEDS; i++) {
-    leds[i] = applyGamma(currentColor);
+    leds[i] = currentColor;
   }
 }
 
@@ -1509,14 +1549,22 @@ void rainbowLarry() {
     g_patternShouldReset = false;
   }
 
-  // Apply speed envelope for dramatic beat-reactive speed boost (1.0x to 2.5x)
+  // Apply speed envelope for dramatic beat-reactive speed boost (1.0x to 3.5x)
   int increment = (int)(baseIncrement * getSpeedMultiplier());
 
-  // Render rainbow across all LEDs (NO brightness scaling - let global handle it)
+  // Get beat brightness scale for music mode
+  float beatScale = getMusicBeatBrightnessScale();
+
+  // Render rainbow across all LEDs
   for (int i = 0; i < NUM_LEDS; i++) {
     int hue = colorOffset + totalHueSpan * i / NUM_LEDS;
     byte r, g, b;
     hsvToRgb(hue, 255, 255, &r, &g, &b);
+
+    // Apply beat brightness in music mode (BEFORE gamma!)
+    r = (byte)(r * beatScale);
+    g = (byte)(g * beatScale);
+    b = (byte)(b * beatScale);
 
     // Apply gamma correction (MUST be last!)
     r = gammaTable[r];
@@ -1547,10 +1595,13 @@ void sineWaveChase() {
     g_patternShouldReset = false;
   }
 
-  // Apply speed envelope for dramatic beat-reactive speed boost (1.0x to 2.5x)
+  // Apply speed envelope for dramatic beat-reactive speed boost (1.0x to 3.5x)
   int increment = (int)(baseIncrement * getSpeedMultiplier());
 
-  // Render sine wave pattern (NO brightness scaling - let global handle it)
+  // Get beat brightness scale for music mode
+  float beatScale = getMusicBeatBrightnessScale();
+
+  // Render sine wave pattern
   for (int i = 0; i < NUM_LEDS; i++) {
     // Calculate sine value using fixed-point math (-127 to +127)
     signed char sineValue = fixSin(waveOffset + waveSpan * i / NUM_LEDS);
@@ -1566,6 +1617,11 @@ void sineWaveChase() {
       byte val = 254 + sineValue * 2;  // sineValue is negative, so this reduces brightness
       hsvToRgb(baseHue, 255, val, &r, &g, &b);
     }
+
+    // Apply beat brightness in music mode (BEFORE gamma!)
+    r = (byte)(r * beatScale);
+    g = (byte)(g * beatScale);
+    b = (byte)(b * beatScale);
 
     // Apply gamma correction (critical for dark gaps!)
     r = gammaTable[r];
@@ -1605,8 +1661,11 @@ void wavyFlag() {
     g_patternShouldReset = false;
   }
 
-  // Apply speed envelope for dramatic beat-reactive speed boost (1.0x to 2.5x)
+  // Apply speed envelope for dramatic beat-reactive speed boost (1.0x to 3.5x)
   int increment = (int)(baseIncrement * getSpeedMultiplier());
+
+  // Get beat brightness scale for music mode
+  float beatScale = getMusicBeatBrightnessScale();
 
   // Calculate total arc length with wave deformation
   long sum = 0;
@@ -1629,7 +1688,12 @@ void wavyFlag() {
     byte g = ((flagTable[idx1 + 1] * a) + (flagTable[idx2 + 1] * b)) >> 8;
     byte bl = ((flagTable[idx1 + 2] * a) + (flagTable[idx2 + 2] * b)) >> 8;
 
-    // Apply gamma correction
+    // Apply beat brightness in music mode (BEFORE gamma!)
+    r = (byte)(r * beatScale);
+    g = (byte)(g * beatScale);
+    bl = (byte)(bl * beatScale);
+
+    // Apply gamma correction (MUST be last!)
     r = gammaTable[r];
     g = gammaTable[g];
     bl = gammaTable[bl];
