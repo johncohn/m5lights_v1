@@ -1,10 +1,25 @@
 /// @file    m5lights_v1_simple.ino
-/// @brief   Ultra-Simple ESP-NOW LED Sync with 14 Patterns + Music Mode
-/// @version 3.8.2
-/// @date    2024-11-24
-/// @author  John Cohn (adapted from Mark Kriegsman)
+/// @brief   ESP-NOW LED Sync with Larry's 4 Beat-Reactive Patterns
+/// @version 4.0.0
+/// @date    2025-12-26
+/// @author  John Cohn (Larry patterns adapted from larry_test_m5stack)
 ///
 /// @changelog
+/// v4.0.0 (2025-12-26) - MAJOR UPDATE: Larry's Beat-Reactive Patterns
+///   - REMOVED all 14 old patterns (rainbow, confetti, bpm, fire, etc.)
+///   - ADDED 4 Larry patterns from larry_test_m5stack:
+///     * Solid Color - Random vibrant colors, beat triggers new color
+///     * Rainbow - Smooth color wheel, BPM-synced rotation speed
+///     * Sine Wave Chase - Color waves with dramatic dark gaps, BPM-synced motion
+///     * Wavy Flag - Red/white/blue patriotic pattern, BPM-synced waves
+///   - ADDED gamma correction system for rich, saturated colors
+///   - ADDED fixed-point math utilities (sine/cosine tables, HSV conversion)
+///   - ADDED beat-reactive helpers (getBeatSpeed, getBeatBrightnessPulse)
+///   - Beat reactivity: patterns sync speed to BPM and pulse brightness on beats
+///   - Patterns use 1536 hue units (vs FastLED's 256) for smoother gradients
+///   - Critical signed char fix for proper dark gaps in sine waves
+///   - Pattern state resets when switching for fresh random parameters
+///   - All ESP-NOW sync, music detection, and UI features preserved
 /// v3.8.2 (2024-11-24) - Longer Pattern Duration
 ///   - Changed auto-advance from 15 seconds to 30 seconds (2x longer)
 ///   - Patterns now stay visible longer for better enjoyment
@@ -164,7 +179,7 @@
 FASTLED_USING_NAMESPACE
 
 // Version info
-#define VERSION "3.8.2"
+#define VERSION "4.0.0"
 
 // Hardware config
 #define LED_PIN 32
@@ -178,6 +193,107 @@ FASTLED_USING_NAMESPACE
 
 CRGB leds[NUM_LEDS];
 CRGB ledsNext[NUM_LEDS];  // Second buffer for cross-fading
+
+// ===== GAMMA CORRECTION SYSTEM =====
+// 8-bit gamma correction table for WS2812B LEDs (from original Larry code)
+// Extends black range (0-41 -> pure black) for dramatic dark gaps
+// Creates rich, saturated colors by applying exponential brightness curve
+const byte gammaTable[256] = {
+    0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+    0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+    0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  1,  1,  1,  1,  2,  2,
+    3,  3,  4,  4,  4,  4,  5,  5,  5,  5,  6,  6,  6,  7,  7,  7,
+    8,  8,  8,  9,  9,  9, 10, 10, 11, 11, 11, 12, 12, 13, 13, 14,
+   14, 15, 15, 16, 16, 17, 17, 18, 18, 19, 19, 20, 20, 21, 22, 22,
+   23, 23, 24, 25, 25, 26, 26, 27, 28, 28, 29, 30, 30, 31, 32, 33,
+   33, 34, 35, 35, 36, 37, 38, 38, 39, 40, 41, 42, 42, 43, 44, 45,
+   46, 47, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 56, 57, 58, 59,
+   60, 61, 62, 63, 64, 65, 66, 67, 68, 70, 71, 72, 73, 74, 75, 76,
+   77, 78, 79, 81, 82, 83, 84, 85, 86, 88, 89, 90, 91, 92, 94, 95,
+   96, 97, 99,100,101,102,104,105,106,108,109,110,112,113,114,116,
+  117,119,120,121,123,124,126,127,129,130,132,133,135,136,138,139,
+  141,142,144,145,147,149,150,152,153,155,157,158,160,162,163,165,
+  167,168,170,172,174,175,177,179,181,182,184,186,188,190,192,193,
+  195,197,199,201,203,205,207,209,211,213,215,217,219,221,223,225
+};
+
+// Apply gamma correction to a single RGB value
+CRGB applyGamma(CRGB color) {
+  return CRGB(
+    gammaTable[color.r],
+    gammaTable[color.g],
+    gammaTable[color.b]
+  );
+}
+
+// ===== FIXED-POINT MATH UTILITIES =====
+// Sine lookup table for fixed-point math (0-180 degrees)
+// CRITICAL: Must use signed char on ESP32 for proper dark gaps!
+// ESP32 treats 'char' as unsigned by default, which breaks sine wave troughs
+const signed char sineTable[181] = {
+  0,1,2,3,5,6,7,8,9,10,11,12,13,15,16,17,
+  18,19,20,21,22,23,24,25,27,28,29,30,31,32,33,34,
+  35,36,37,38,39,40,42,43,44,45,46,47,48,49,50,51,
+  52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,
+  67,68,69,70,71,72,73,74,75,76,77,77,78,79,80,81,
+  82,83,83,84,85,86,87,88,88,89,90,91,92,92,93,94,
+  95,95,96,97,97,98,99,100,100,101,102,102,103,104,104,105,
+  105,106,107,107,108,108,109,110,110,111,111,112,112,113,113,114,
+  114,115,115,116,116,117,117,117,118,118,119,119,120,120,120,121,
+  121,121,122,122,122,123,123,123,123,124,124,124,124,125,125,125,
+  125,125,126,126,126,126,126,126,126,127,127,127,127,127,127,127,
+  127,127,127,127,127
+};
+
+// Fixed-point sine function (angle in 720 units per cycle, 0-719)
+// Returns signed value -127 to +127
+// Uses 720-unit cycle (2× resolution of 360 degrees) for smoother animations
+signed char fixSin(int angle) {
+  angle %= 720;
+  if (angle < 0) angle += 720;
+  return (angle <= 360) ?
+     sineTable[(angle <= 180) ?
+       angle          :
+      (360 - angle)] :
+    -sineTable[(angle <= 540) ?
+      (angle - 360)   :
+      (720 - angle)];
+}
+
+// Fixed-point cosine function (angle in 720 units per cycle, 0-719)
+// Returns signed value -127 to +127
+signed char fixCos(int angle) {
+  angle %= 720;
+  if (angle < 0) angle += 720;
+  return (angle <= 360) ?
+    ((angle <= 180) ?  sineTable[180 - angle]  :
+                      -sineTable[angle - 180]) :
+    ((angle <= 540) ? -sineTable[540 - angle]  :
+                       sineTable[angle - 540]);
+}
+
+// HSV to RGB conversion with custom hue range (0-1535)
+// The Larry patterns use 1536 hue units instead of FastLED's 256
+void hsvToRgb(int h, byte s, byte v, byte *r, byte *g, byte *b) {
+  h %= 1536;
+  if (h < 0) h += 1536;
+
+  byte sextant = h >> 8;
+  byte frac = h & 255;
+  byte vs = (v * s) >> 8;
+  byte p = v - vs;
+  byte q = v - ((vs * frac) >> 8);
+  byte t = v - ((vs * (255 - frac)) >> 8);
+
+  switch (sextant) {
+    case 0: *r = v; *g = t; *b = p; break;
+    case 1: *r = q; *g = v; *b = p; break;
+    case 2: *r = p; *g = v; *b = t; break;
+    case 3: *r = p; *g = q; *b = v; break;
+    case 4: *r = t; *g = p; *b = v; break;
+    default: *r = v; *g = p; *b = q; break;
+  }
+}
 
 // Cross-fade variables
 bool isFading = false;
@@ -214,6 +330,8 @@ uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
 // Pattern globals
 uint8_t gCurrentPatternNumber = 0;
+uint8_t gPreviousPatternNumber = 255;  // Track pattern changes for state reset
+bool g_patternShouldReset = false;     // Signal to patterns that they should reinitialize
 uint8_t gHue = 0;
 
 // Audio system variables (from working v2.6 implementation)
@@ -238,9 +356,16 @@ bool beatReactive = false;                 // NEW: Whether patterns should respo
 // Brightness decay envelope for smoother audio response
 float brightnessEnvelope = BRIGHTNESS;  // Current decaying brightness level
 unsigned long lastBrightnessUpdate = 0;  // For calculating decay time delta
-#define BRIGHTNESS_DECAY_SECONDS 0.25f   // Time constant for exponential decay (63% falloff)
+#define BRIGHTNESS_DECAY_SECONDS 1.0f    // Time constant for exponential decay (63% falloff) - slower = less jarring
 #define BRIGHTNESS_THRESHOLD 0.35f       // Audio must exceed this level to boost brightness (0.0-1.0)
 #define BRIGHTNESS_POWER_CURVE 2.0f      // Power curve exponent (1.0=linear, 2.0=square, 3.0=cube)
+#define BRIGHTNESS_MIN 18                // Minimum brightness - high enough to see patterns clearly (was 1, too dim!)
+#define BRIGHTNESS_MAX 30                // Maximum brightness - slightly higher for visible pulsing
+
+// Speed envelope for dramatic beat-reactive speed changes
+float speedEnvelope = 1.0f;              // Current speed multiplier (1.0 = normal, 2.5 = boosted)
+unsigned long lastSpeedUpdate = 0;       // For calculating decay time delta
+#define SPEED_BOOST_MULTIPLIER 2.5f      // How much to boost speed on beat (2.5x = very noticeable)
 
 // Adaptive audio scaling - Ultra-fast response for immediate contrast
 float noiseFloor = 0.01f;          // Moving average of quiet ambient sound
@@ -277,37 +402,75 @@ unsigned long lastBroadcast = 0;
 #define REJOIN_SCAN_INTERVAL_MS 15000  // Scan for leaders every 15 seconds
 #define COMPLETE_FRAME_TIMEOUT_MS 5000  // Max time between complete frames before restart
 
-// Pattern function declarations
-void rainbow();
-void rainbowWithGlitter();
-void confetti();
-void bpm();
-void fire();
-void lightningStorm();
-void plasmaField();
-void auroraWaves();
-void sparkle();
-void colorWaves();
-void pride();
-void ocean();
-void twinkle();
-void paletteBlend();
+// ===== LARRY PATTERN DECLARATIONS =====
+// Four beat-reactive patterns from larry_test_m5stack
+void solidColor();      // Random vibrant solid colors (beat triggers new color)
+void rainbowLarry();    // Smooth rotating color wheel (BPM-synced speed)
+void sineWaveChase();   // Color waves with dramatic dark gaps (BPM-synced motion)
+void wavyFlag();        // Animated red/white/blue patriotic pattern (BPM-synced waves)
 
 // Pattern list and names
 typedef void (*SimplePatternList[])();
 SimplePatternList gPatterns = {
-  rainbow, confetti, bpm, fire, lightningStorm, plasmaField,
-  auroraWaves, sparkle, rainbowWithGlitter, colorWaves, pride, ocean,
-  twinkle, paletteBlend
+  solidColor,
+  rainbowLarry,
+  sineWaveChase,
+  wavyFlag
 };
 
 const char* patternNames[] = {
-  "Rainbow", "Confetti", "BPM", "Fire", "Lightning", "Plasma",
-  "Aurora", "Sparkle", "Rainbow+Glitter", "ColorWaves", "Pride", "Ocean",
-  "Twinkle", "Palette"
+  "Solid",
+  "Rainbow",
+  "SineChase",
+  "WavyFlag"
 };
 
 #define ARRAY_SIZE(A) (sizeof(A) / sizeof((A)[0]))
+
+// ===== BEAT-REACTIVE HELPER FUNCTIONS =====
+// Calculate speed multiplier from beat interval (0.5x to 3.0x)
+// Faster BPM = higher speed multiplier for pattern animations
+float getBeatSpeed() {
+  uint32_t interval = getMedianInterval();
+  if (interval == 0) return 1.0f;  // No beat detected, use default speed
+
+  // Calculate BPM from interval: BPM = 60000 / intervalMs
+  // Then scale to 0.5-3.0 range:
+  //   60 BPM (1000ms) -> 1.0x (normal speed)
+  //   120 BPM (500ms) -> 2.0x (double speed)
+  //   180 BPM (333ms) -> 3.0x (triple speed)
+  //   30 BPM (2000ms) -> 0.5x (half speed)
+  float speed = 1000.0f / (float)interval;
+  return constrain(speed, 0.5f, 3.0f);
+}
+
+// Adjust animation increment based on beat speed
+// Example: getBeatAdjustedInc(2) returns 2 at 60BPM, 4 at 120BPM, 1 at 30BPM
+int getBeatAdjustedInc(int baseInc) {
+  return (int)(baseInc * getBeatSpeed());
+}
+
+// Get SUBTLE beat-reactive speed multiplier for patterns (0.8x to 1.2x)
+// More subtle than before for smoother, more predictable motion
+float getBeatSpeedMultiplier() {
+  if (!audioDetected) return 1.0f;  // No music, use base speed
+
+  uint32_t interval = getMedianInterval();
+  if (interval == 0) return 1.0f;  // No beat detected
+
+  // Calculate speed from BPM, but keep it subtle (0.8x to 1.2x range)
+  // 60 BPM = 1.0x, 120 BPM = 1.2x, 30 BPM = 0.8x
+  float speed = 1000.0f / (float)interval;  // BPM-based speed
+  speed = 0.8f + (speed - 0.5f) * 0.2f;  // Map to 0.8-1.2 range
+  return constrain(speed, 0.8f, 1.2f);
+}
+
+// Get speed multiplier from envelope for dramatic beat-reactive speed changes
+// Returns 1.0x (normal) to 2.5x (boosted) with smooth decay
+float getSpeedMultiplier() {
+  if (!audioDetected) return 1.0f;  // No music, use normal speed
+  return speedEnvelope;  // Use the globally tracked speed envelope
+}
 
 // ESP-NOW callbacks
 void onDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
@@ -671,19 +834,19 @@ void updateAudioLevel() {
   float normalizedLevel = (audioLevel - noiseFloor) / range;
   normalizedLevel = constrain(normalizedLevel, 0.0f, 1.0f);
 
-  // THRESHOLD AND POWER CURVE - only pronounced beats boost brightness
+  // THRESHOLD AND POWER CURVE - pronounced beats boost brightness dramatically
   // Quieter sounds below threshold stay at base brightness
-  // Above threshold, apply power curve for more dramatic response
+  // Above threshold, apply power curve for dramatic response
   float targetBrightness;
   if (normalizedLevel < BRIGHTNESS_THRESHOLD) {
-    targetBrightness = 1.0f;  // Stay at minimum brightness for quiet sounds
+    targetBrightness = (float)BRIGHTNESS_MIN;  // Minimum brightness for quiet sounds
   } else {
     // Scale from threshold to 1.0 into 0.0 to 1.0 range
     float scaledLevel = (normalizedLevel - BRIGHTNESS_THRESHOLD) / (1.0f - BRIGHTNESS_THRESHOLD);
-    // Apply power curve (square, cube, etc.) to make response more dramatic
+    // Apply power curve for dramatic response
     float curved = pow(scaledLevel, BRIGHTNESS_POWER_CURVE);
-    // Map to brightness range (1-25)
-    targetBrightness = 1.0f + (curved * 24.0f);
+    // Map to WIDE brightness range (30-200) for VERY visible pulsing!
+    targetBrightness = (float)BRIGHTNESS_MIN + (curved * (float)(BRIGHTNESS_MAX - BRIGHTNESS_MIN));
   }
 
   // SMOOTH DECAY ENVELOPE - requested by Max!
@@ -704,8 +867,30 @@ void updateAudioLevel() {
     brightnessEnvelope = targetBrightness + (brightnessEnvelope - targetBrightness) * decayFactor;
 
     // Don't go below minimum brightness
-    if (brightnessEnvelope < 1.0f) {
-      brightnessEnvelope = 1.0f;
+    if (brightnessEnvelope < (float)BRIGHTNESS_MIN) {
+      brightnessEnvelope = (float)BRIGHTNESS_MIN;
+    }
+  }
+
+  // SPEED ENVELOPE - dramatic speed boost on beat with smooth decay
+  // Same attack/decay behavior as brightness for consistent feel
+  float targetSpeed = beatDetected ? SPEED_BOOST_MULTIPLIER : 1.0f;
+
+  float speedTimeDelta = (now - lastSpeedUpdate) / 1000.0f;
+  lastSpeedUpdate = now;
+
+  if (targetSpeed > speedEnvelope) {
+    // ATTACK: Instantly boost speed on beat
+    speedEnvelope = targetSpeed;
+  } else {
+    // DECAY: Smooth falloff back to normal speed (same tau as brightness)
+    float tau = BRIGHTNESS_DECAY_SECONDS;
+    float decayFactor = exp(-speedTimeDelta / tau);
+    speedEnvelope = targetSpeed + (speedEnvelope - targetSpeed) * decayFactor;
+
+    // Don't go below 1.0x
+    if (speedEnvelope < 1.0f) {
+      speedEnvelope = 1.0f;
     }
   }
 
@@ -962,10 +1147,16 @@ void nextPattern() {
   fadeAmount = 0.0f;
   fadeStartTime = millis();
 
+  // Signal new pattern to initialize (BEFORE fade starts so it's ready)
+  g_patternShouldReset = true;
+
   Serial.print("Fading from pattern ");
   Serial.print(fadeFromPattern);
   Serial.print(" to ");
   Serial.println(fadeToPattern);
+
+  // Track pattern change for state reset
+  gPreviousPatternNumber = gCurrentPatternNumber;
 }
 
 // Enhanced leader timeout with rejoin logic
@@ -1096,6 +1287,8 @@ void updateCrossFade() {
     fadeAmount = 1.0f;
     isFading = false;
     gCurrentPatternNumber = fadeToPattern;
+    // DON'T reset pattern - it's already been rendering during fade!
+    // g_patternShouldReset = true;  // REMOVED - causes abrupt jump
     Serial.print("Fade complete, now on pattern ");
     Serial.println(gCurrentPatternNumber);
   }
@@ -1138,14 +1331,22 @@ void renderPattern() {
 }
 
 void loop() {
+  // Non-blocking frame rate limiting - 60 FPS without blocking ESP-NOW
+  static unsigned long lastFrameTime = 0;
+  unsigned long currentTime = millis();
+
+  if (currentTime - lastFrameTime < 16) {
+    yield();
+    return;  // Skip this iteration, come back in next loop
+  }
+  lastFrameTime = currentTime;
+
   // Reset watchdog timer
   esp_task_wdt_reset();
 
   M5.update();
   handleButtons();
   handlePatternButtons();
-
-  unsigned long currentTime = millis();
 
   // Check for leader timeout
   checkLeaderTimeout();
@@ -1222,380 +1423,221 @@ void loop() {
   
   // Increment hue for patterns
   EVERY_N_MILLISECONDS(20) { gHue++; }
-  
+
   yield();
 }
 
-// ===== PATTERN IMPLEMENTATIONS =====
-// All 12 patterns from v2.6
+// ===== LARRY PATTERN IMPLEMENTATIONS =====
+// Four beat-reactive patterns from larry_test_m5stack
+// All patterns apply gamma correction for rich colors and dramatic dark gaps
 
-void rainbow() {
-  fill_rainbow(leds, NUM_LEDS, gHue, 7);
-}
-
-void rainbowWithGlitter() {
-  rainbow();
-  // Normal glitter
-  if (random8() < 80) {
-    leds[random16(NUM_LEDS)] += CRGB::White;
-  }
-  // BEAT-REACTIVE: Extra bright glitter burst on beat
-  if (beatReactive && beatDetected) {
-    for (int i = 0; i < 20; i++) {
-      leds[random16(NUM_LEDS)] = CRGB::White;
-    }
-  }
-}
-
-void confetti() {
-  fadeToBlackBy(leds, NUM_LEDS, 10);
-  int pos = random16(NUM_LEDS);
-  leds[pos] += CHSV(gHue + random8(64), 200, 255);
-}
-
-void bpm() {
-  static bool direction = false;  // false = forward, true = reverse
+// Pattern 0: Solid Color
+// Music mode: Beat triggers smooth fade to new random color
+// Normal mode: Slowly fades through rainbow colors
+void solidColor() {
+  static CRGB currentColor = CRGB(255, 0, 0);
   static bool lastBeatState = false;
+  static int currentHue = 0;   // Current hue position
+  static int targetHue = 0;    // Target hue (for smooth transitions)
 
-  // BEAT-REACTIVE: Reverse direction on beat
-  if (beatReactive && beatDetected && !lastBeatState) {
-    direction = !direction;  // Toggle direction on rising edge of beat
-  }
-  lastBeatState = beatDetected;
-
-  uint8_t BeatsPerMinute = 62;
-  CRGBPalette16 palette = PartyColors_p;
-  uint8_t beat = beatsin8(BeatsPerMinute, 64, 255);
-
-  for (int i = 0; i < NUM_LEDS; i++) {
-    int index = direction ? (NUM_LEDS - 1 - i) : i;  // Reverse index if direction is true
-    leds[index] = ColorFromPalette(palette, gHue + (i * 2), beat - gHue + (i * 10));
-  }
-}
-
-void fire() {
-  static uint8_t heat[NUM_LEDS/2];
-  int half = NUM_LEDS/2;
-  uint8_t cooling = 55;
-  uint8_t sparking = 120;
-  
-  for (int i = 0; i < half; i++) {
-    heat[i] = qsub8(heat[i], random8(0, ((cooling * 10) / half) + 2));
-  }
-  
-  for (int k = half - 1; k >= 2; k--) {
-    heat[k] = (heat[k - 1] + heat[k - 2] + heat[k - 2]) / 3;
-  }
-  
-  if (random8() < sparking) {
-    int y = random8(7);
-    heat[y] = qadd8(heat[y], random8(160, 255));
-  }
-  
-  for (int j = 0; j < half; j++) {
-    CRGB color = ColorFromPalette(HeatColors_p, scale8(heat[j], 240));
-    leds[half + j] = color;
-    leds[half - 1 - j] = color;
-  }
-}
-
-void lightningStorm() {
-  static unsigned long lastStrike = 0;
-  unsigned long currentTime = millis();
-
-  for (int i = 0; i < NUM_LEDS; i++) {
-    leds[i].nscale8(220);
-    leds[i] += CRGB(0, 0, 15);
+  // Check if pattern should reset (freshly selected)
+  if (g_patternShouldReset) {
+    currentHue = random(1536);
+    targetHue = currentHue;
+    lastBeatState = false;
+    g_patternShouldReset = false;
   }
 
-  // BEAT-REACTIVE: Trigger strikes on beat, otherwise random timing
-  bool shouldStrike = false;
-  if (beatReactive && beatDetected) {
-    shouldStrike = true;  // Always strike on beat
-    lastStrike = currentTime;  // Reset timer
-  } else if (currentTime - lastStrike > random16(100, 2000)) {
-    shouldStrike = true;  // Random strike timing when not beat-reactive
-    lastStrike = currentTime;
-  }
-
-  if (shouldStrike) {
-    int strikePos = random16(NUM_LEDS - 30);
-    int strikeLength = random8(10, 25);
-
-    for (int i = strikePos; i < strikePos + strikeLength && i < NUM_LEDS; i++) {
-      leds[i] = CRGB(255, 255, 255);
+  // Check mode (not audioDetected, which can be true in any mode)
+  if (currentMode == MODE_MUSIC || currentMode == MODE_MUSIC_LEADER) {
+    // MUSIC MODE: Beat triggers new target color, then smoothly fade to it
+    if (beatDetected && !lastBeatState) {
+      targetHue = random(1536);  // Set new target color on beat
     }
+    lastBeatState = beatDetected;
 
-    if (random8() < 150) {
-      int secondaryPos = strikePos + random8(-5, 5);
-      int secondaryLen = random8(5, 12);
-      for (int i = secondaryPos; i < secondaryPos + secondaryLen && i >= 0 && i < NUM_LEDS; i++) {
-        leds[i] = CRGB(200, 200, 255);
-      }
+    // Smoothly interpolate current hue toward target hue
+    if (currentHue != targetHue) {
+      int diff = targetHue - currentHue;
+      // Handle wrapping (shortest path around color wheel)
+      if (diff > 768) diff -= 1536;
+      if (diff < -768) diff += 1536;
+
+      // Move VERY slowly toward target (about 1-2% per frame for smooth fade)
+      // At 60 FPS, this takes about 1 second to complete the transition
+      int step = diff / 60;
+      if (step == 0) step = (diff > 0) ? 1 : -1;  // Minimum step
+
+      currentHue += step;
+      if (currentHue < 0) currentHue += 1536;
+      if (currentHue >= 1536) currentHue -= 1536;
     }
-  }
-}
-
-void plasmaField() {
-  static uint16_t plasmaTime = 0;
-  static uint8_t plasmaHue = 0;
-  
-  plasmaTime += 2;
-  plasmaHue += 1;
-  
-  for (int i = 0; i < NUM_LEDS; i++) {
-    uint8_t wave1 = sin8(plasmaTime/4 + i * 8);
-    uint8_t wave2 = sin8(plasmaTime/3 + i * 6 + 85);
-    uint8_t wave3 = sin8(plasmaTime/5 + i * 4 + 170);
-    uint8_t wave4 = sin8(plasmaTime/7 + i * 12);
-    
-    uint8_t combined = (wave1/4 + wave2/3 + wave3/3 + wave4/6);
-    uint8_t hue = plasmaHue + combined/2;
-    uint8_t brightness = combined + sin8(plasmaTime/8 + i)/4;
-    
-    leds[i] = CHSV(hue, 240, brightness);
-  }
-}
-
-void auroraWaves() {
-  static uint16_t wave1_pos = 0, wave2_pos = 0, wave3_pos = 0;
-  static uint8_t auroraHue = 96;
-  static bool lastBeatState = false;
-
-  // BEAT-REACTIVE: Shift hue on beat for color changes
-  if (beatReactive && beatDetected && !lastBeatState) {
-    auroraHue += 30;  // Jump to new color on beat
-    if (auroraHue > 140) auroraHue = 80;  // Wrap around
-  }
-  lastBeatState = beatDetected;
-
-  wave1_pos += 2;
-  wave2_pos += 3;
-  wave3_pos += 1;
-
-  fill_solid(leds, NUM_LEDS, CRGB::Black);
-
-  for (int i = 0; i < NUM_LEDS; i++) {
-    uint8_t wave1 = sin8(wave1_pos + i * 4);
-    uint8_t wave2 = sin8(wave2_pos + i * 6 + 85);
-    uint8_t wave3 = sin8(wave3_pos + i * 2 + 170);
-
-    uint8_t hue1 = auroraHue + sin8(i * 8)/8;
-    uint8_t hue2 = auroraHue + 40;
-    uint8_t hue3 = auroraHue + 80;
-
-    if (wave1 > 100) {
-      leds[i] += CHSV(hue1, 255, (wave1-100)*2);
-    }
-    if (wave2 > 120) {
-      leds[i] += CHSV(hue2, 240, (wave2-120)*2);
-    }
-    if (wave3 > 140) {
-      leds[i] += CHSV(hue3, 200, (wave3-140)*3);
-    }
-  }
-
-  // Gradual color drift when not beat-reactive
-  if (!beatReactive && random8() < 2) {
-    auroraHue += random8(5) - 2;
-    auroraHue = constrain(auroraHue, 80, 140);
-  }
-}
-
-void lavaFlow() {
-  // Ultra-dynamic lava with faster, more organic movement
-  uint32_t time = millis();
-  
-  // Faster, more chaotic flow speeds for organic movement
-  uint16_t mainFlow = time / 15;      // Faster primary flow (was 25)
-  uint16_t bubbleFlow = time / 7;     // Much faster bubbling (was 12)
-  uint16_t waveFlow = time / 35;      // Faster waves (was 65)
-  uint16_t slowChurn = time / 90;     // Faster deep churning (was 180)
-  uint16_t fastTurbulence = time / 4; // New: very fast surface turbulence
-  
-  // Dynamic color evolution with more variation
-  uint8_t colorShift = (time / 60) & 255;  // Faster color cycling (was 100)
-  uint8_t colorVariation = (time / 40) & 255;  // Additional color complexity
-  
-  for (int i = 0; i < NUM_LEDS; i++) {
-    // Create highly complex flowing heat patterns with more layers
-    uint8_t bubble = inoise8(i * 35 + bubbleFlow, bubbleFlow / 3);     // Tighter, faster bubbles
-    uint8_t wave = inoise8(i * 55, waveFlow);                          // More frequent waves
-    uint8_t flow = inoise8(i * 85, mainFlow);                          // Tighter main flow
-    uint8_t churn = inoise8(i * 150, slowChurn);                       // More active churning
-    uint8_t turbulence = inoise8(i * 25 + fastTurbulence, fastTurbulence / 2); // Surface chaos
-    
-    // Multiple directional flows for organic movement
-    uint16_t flowPos1 = i + (mainFlow / 6);  // Faster primary flow
-    uint16_t flowPos2 = i - (bubbleFlow / 10);  // Counter-flow
-    uint8_t directionalHeat1 = inoise8(flowPos1 * 45, time / 25);
-    uint8_t directionalHeat2 = inoise8(flowPos2 * 65, time / 35);
-    
-    // Complex heat mixing with more dynamic interaction
-    uint16_t totalHeat = (bubble * 4 + wave * 3 + flow * 5 + churn * 3 + 
-                         turbulence * 6 + directionalHeat1 * 4 + directionalHeat2 * 2) / 10;
-    totalHeat = constrain(totalHeat, 0, 255);
-    
-    // Enhanced dynamic color temperature with spatial variation
-    uint8_t tempShift = sin8(colorShift + i * 12) / 6;  // More color variation
-    uint8_t spatialVar = sin8(colorVariation + i * 20) / 4;  // Additional spatial variation
-    
-    // Richer lava color palette with more reds, oranges, and yellows
-    CRGB color;
-    uint8_t adjustedHeat = qadd8(qadd8(totalHeat, tempShift), spatialVar);
-    
-    if (adjustedHeat < 50) {
-      // Deep dark red to rich red
-      uint8_t red = 20 + (adjustedHeat * 4);
-      color = CRGB(red, adjustedHeat / 8, 0);
-    } else if (adjustedHeat < 100) {
-      // Rich reds to warm orange-reds
-      uint8_t progress = adjustedHeat - 50;
-      uint8_t red = 220 + (progress / 2);
-      uint8_t green = progress * 2;
-      color = CRGB(red, green, 0);
-    } else if (adjustedHeat < 150) {
-      // Warm oranges to bright oranges
-      uint8_t progress = adjustedHeat - 100;
-      uint8_t red = 255;
-      uint8_t green = 100 + (progress * 2);
-      uint8_t blue = progress / 8;
-      color = CRGB(red, green, blue);
-    } else if (adjustedHeat < 200) {
-      // Bright orange to golden yellow
-      uint8_t progress = adjustedHeat - 150;
-      uint8_t red = 255;
-      uint8_t green = 200 + progress;
-      uint8_t blue = progress / 3;
-      color = CRGB(red, green, blue);
-    } else {
-      // Golden yellow to bright white-yellow
-      uint8_t progress = adjustedHeat - 200;
-      uint8_t red = 255;
-      uint8_t green = 255;
-      uint8_t blue = 50 + (progress * 3);
-      color = CRGB(red, green, blue);
-    }
-    
-    // Enhanced flickering with multiple frequency layers
-    uint8_t flicker1 = sin8(time / 5 + i * 20) / 20;   // Fast flicker
-    uint8_t flicker2 = sin8(time / 12 + i * 8) / 32;   // Medium flicker
-    uint8_t brightness = 220 + flicker1 + flicker2;
-    color.nscale8(brightness);
-
-    leds[i] = color;
-  }
-}
-
-// NEW FILL-THE-STRAND PATTERNS
-
-void sparkle() {
-  // Random twinkling across entire strand
-  fadeToBlackBy(leds, NUM_LEDS, 30);
-
-  // Add multiple sparkles per frame
-  int sparkleCount = 15;
-  // BEAT-REACTIVE: More and brighter sparkles on beat
-  if (beatReactive && beatDetected) {
-    sparkleCount = 40;  // Much more sparkles on beat
-  }
-
-  for (int i = 0; i < sparkleCount; i++) {
-    int pos = random16(NUM_LEDS);
-    leds[pos] = CHSV(random8(), 200, 255);
-  }
-}
-
-void colorWaves() {
-  // Smooth color waves flowing across entire strand
-  static uint16_t wave1 = 0, wave2 = 0, wave3 = 0;
-  wave1 += 3;
-  wave2 += 5;
-  wave3 += 2;
-
-  for (int i = 0; i < NUM_LEDS; i++) {
-    uint8_t hue1 = sin8(wave1 + i * 8);
-    uint8_t hue2 = sin8(wave2 + i * 12 + 85);
-    uint8_t hue3 = sin8(wave3 + i * 6 + 170);
-    uint8_t hue = (hue1 + hue2 + hue3) / 3;
-    uint8_t brightness = (sin8(wave1 + i * 10) + sin8(wave2 + i * 8)) / 2;
-    leds[i] = CHSV(hue, 255, brightness);
-  }
-}
-
-void pride() {
-  // Rainbow pride flag colors filling the strand
-  static uint16_t scroll = 0;
-  scroll += 2;
-
-  for (int i = 0; i < NUM_LEDS; i++) {
-    uint8_t hue = (i * 256 / NUM_LEDS + scroll) % 256;
-    uint8_t brightness = 220 + sin8(scroll + i * 8) / 8;
-    leds[i] = CHSV(hue, 255, brightness);
-  }
-}
-
-void ocean() {
-  // Blue/cyan wave patterns
-  static uint16_t wave1 = 0, wave2 = 0;
-  wave1 += 4;
-  wave2 += 2;
-
-  for (int i = 0; i < NUM_LEDS; i++) {
-    uint8_t wave = (sin8(wave1 + i * 6) + sin8(wave2 + i * 10 + 128)) / 2;
-    uint8_t hue = 128 + sin8(wave1 + i * 3) / 8;  // Blues and cyans
-    uint8_t brightness = 150 + wave / 2;
-    leds[i] = CHSV(hue, 240, brightness);
-  }
-}
-
-void twinkle() {
-  // All LEDs pulsing with different colors
-  static uint8_t pulseState[NUM_LEDS];
-  static uint8_t pulseHue[NUM_LEDS];
-  static bool initialized = false;
-
-  if (!initialized) {
-    for (int i = 0; i < NUM_LEDS; i++) {
-      pulseState[i] = random8();
-      pulseHue[i] = random8();
-    }
-    initialized = true;
-  }
-
-  for (int i = 0; i < NUM_LEDS; i++) {
-    pulseState[i] += 2 + (i % 3);  // Different speeds
-    uint8_t brightness = sin8(pulseState[i]);
-    leds[i] = CHSV(pulseHue[i], 200, brightness);
-
-    // Occasionally change hue
-    if (random8() < 3) {
-      pulseHue[i] = random8();
-    }
-  }
-}
-
-void paletteBlend() {
-  // Smooth palette color blending across strand
-  static uint16_t paletteShift = 0;
-  static uint8_t paletteIndex = 0;
-  paletteShift += 2;
-
-  // Rotate through different color palettes
-  CRGBPalette16 currentPalette;
-  if ((millis() / 5000) % 4 == 0) {
-    currentPalette = RainbowColors_p;
-  } else if ((millis() / 5000) % 4 == 1) {
-    currentPalette = PartyColors_p;
-  } else if ((millis() / 5000) % 4 == 2) {
-    currentPalette = OceanColors_p;
   } else {
-    currentPalette = ForestColors_p;
+    // NORMAL MODE: Slowly fade through rainbow colors
+    currentHue += 2;  // Slow continuous rotation
+    if (currentHue >= 1536) currentHue -= 1536;
+    targetHue = currentHue;  // Keep in sync
   }
 
+  // Convert current hue to RGB
+  byte r, g, b;
+  hsvToRgb(currentHue, 255, 255, &r, &g, &b);
+  currentColor = CRGB(r, g, b);
+
+  // Fill all LEDs with current color and apply gamma correction
+  // Gamma must be applied LAST - no brightness scaling after gamma!
   for (int i = 0; i < NUM_LEDS; i++) {
-    uint8_t index = paletteShift + (i * 256 / NUM_LEDS);
-    uint8_t brightness = 200 + sin8(paletteShift + i * 8) / 4;
-    leds[i] = ColorFromPalette(currentPalette, index, brightness, LINEARBLEND);
+    leds[i] = applyGamma(currentColor);
   }
+}
+
+// Pattern 1: Rainbow Larry
+// Smooth rotating color wheel - dramatic beat-reactive speed boost
+void rainbowLarry() {
+  static int colorOffset = 0;
+  static int totalHueSpan = (1 + random(4 * ((NUM_LEDS + 31) / 32))) * 1536;
+  static int baseIncrement = 4 + random(abs(totalHueSpan) / NUM_LEDS);
+
+  // Check if pattern should reset (freshly selected)
+  if (g_patternShouldReset) {
+    colorOffset = 0;
+    totalHueSpan = (1 + random(4 * ((NUM_LEDS + 31) / 32))) * 1536;
+    // Medium base speed: 4-8 (will be boosted to 10-20 on beats)
+    baseIncrement = 4 + random(5);
+    if (random(2) == 0) totalHueSpan = -totalHueSpan;
+    if (random(2) == 0) baseIncrement = -baseIncrement;
+    g_patternShouldReset = false;
+  }
+
+  // Apply speed envelope for dramatic beat-reactive speed boost (1.0x to 2.5x)
+  int increment = (int)(baseIncrement * getSpeedMultiplier());
+
+  // Render rainbow across all LEDs (NO brightness scaling - let global handle it)
+  for (int i = 0; i < NUM_LEDS; i++) {
+    int hue = colorOffset + totalHueSpan * i / NUM_LEDS;
+    byte r, g, b;
+    hsvToRgb(hue, 255, 255, &r, &g, &b);
+
+    // Apply gamma correction (MUST be last!)
+    r = gammaTable[r];
+    g = gammaTable[g];
+    b = gammaTable[b];
+    leds[i] = CRGB(r, g, b);
+  }
+
+  colorOffset += increment;
+}
+
+// Pattern 2: Sine Wave Chase
+// Color waves with dramatic dark gaps - dramatic beat-reactive speed boost
+void sineWaveChase() {
+  static int baseHue = random(1536);
+  static int waveSpan = (1 + random(4 * ((NUM_LEDS + 31) / 32))) * 720;
+  static int baseIncrement = 4 + random(20);
+  static int waveOffset = 0;
+
+  // Check if pattern should reset (freshly selected)
+  if (g_patternShouldReset) {
+    baseHue = random(1536);
+    waveSpan = (1 + random(4 * ((NUM_LEDS + 31) / 32))) * 720;
+    // Medium base speed: 3-6 (will be boosted to 7.5-15 on beats)
+    baseIncrement = 3 + random(4);
+    if (random(2) == 0) baseIncrement = -baseIncrement;
+    waveOffset = 0;
+    g_patternShouldReset = false;
+  }
+
+  // Apply speed envelope for dramatic beat-reactive speed boost (1.0x to 2.5x)
+  int increment = (int)(baseIncrement * getSpeedMultiplier());
+
+  // Render sine wave pattern (NO brightness scaling - let global handle it)
+  for (int i = 0; i < NUM_LEDS; i++) {
+    // Calculate sine value using fixed-point math (-127 to +127)
+    signed char sineValue = fixSin(waveOffset + waveSpan * i / NUM_LEDS);
+
+    byte r, g, b;
+    if (sineValue >= 0) {
+      // Positive sine: vary saturation (254 - foo*2), full brightness
+      byte sat = 254 - (sineValue * 2);
+      hsvToRgb(baseHue, sat, 255, &r, &g, &b);
+    } else {
+      // Negative sine: full saturation, vary brightness (254 + foo*2)
+      // THIS IS WHERE THE DARK GAPS COME FROM!
+      byte val = 254 + sineValue * 2;  // sineValue is negative, so this reduces brightness
+      hsvToRgb(baseHue, 255, val, &r, &g, &b);
+    }
+
+    // Apply gamma correction (critical for dark gaps!)
+    r = gammaTable[r];
+    g = gammaTable[g];
+    b = gammaTable[b];
+    leds[i] = CRGB(r, g, b);
+  }
+
+  waveOffset += increment;
+}
+
+// Pattern 3: Wavy Flag
+// Animated red/white/blue patriotic pattern - BPM-synced flag waves
+void wavyFlag() {
+  // Flag pattern data
+  static const byte flagTable[] = {
+    160, 0, 0,    255, 255, 255,  160, 0, 0,    255, 255, 255,  // Red, White, Red, White
+    160, 0, 0,    255, 255, 255,  160, 0, 0,                     // Red, White, Red
+    0, 0, 100,    255, 255, 255,  0, 0, 100,    255, 255, 255,  // Blue, White, Blue, White
+    0, 0, 100,    255, 255, 255,  0, 0, 100,                     // Blue, White, Blue
+    255, 255, 255, 160, 0, 0,     255, 255, 255, 160, 0, 0,      // White, Red, White, Red
+    255, 255, 255, 160, 0, 0                                     // White, Red
+  };
+
+  static int waveLength = 720 + random(720);
+  static int baseIncrement = 4 + random(10);
+  static int stripeWidth = 200 + random(200);
+  static int wavePhase = 0;
+
+  // Check if pattern should reset (freshly selected)
+  if (g_patternShouldReset) {
+    waveLength = 720 + random(720);
+    // Slower base speed: 1-3 (will be boosted to 2.5-7.5 on beats)
+    baseIncrement = 1 + random(3);
+    stripeWidth = 200 + random(200);
+    wavePhase = 0;
+    g_patternShouldReset = false;
+  }
+
+  // Apply speed envelope for dramatic beat-reactive speed boost (1.0x to 2.5x)
+  int increment = (int)(baseIncrement * getSpeedMultiplier());
+
+  // Calculate total arc length with wave deformation
+  long sum = 0;
+  for (int i = 0; i < NUM_LEDS - 1; i++) {
+    sum += stripeWidth + fixCos(wavePhase + waveLength * i / NUM_LEDS);
+  }
+
+  // Render wavy flag pattern
+  long s = 0;
+  for (int i = 0; i < NUM_LEDS; i++) {
+    // Calculate position along flag pattern with wave deformation
+    long x = 256L * ((sizeof(flagTable) / 3) - 1) * s / sum;
+    int idx1 = (x >> 8) * 3;
+    int idx2 = ((x >> 8) + 1) * 3;
+    byte b = (x & 255) + 1;
+    byte a = 257 - b;
+
+    // Interpolate between flag colors
+    byte r = ((flagTable[idx1] * a) + (flagTable[idx2] * b)) >> 8;
+    byte g = ((flagTable[idx1 + 1] * a) + (flagTable[idx2 + 1] * b)) >> 8;
+    byte bl = ((flagTable[idx1 + 2] * a) + (flagTable[idx2 + 2] * b)) >> 8;
+
+    // Apply gamma correction
+    r = gammaTable[r];
+    g = gammaTable[g];
+    bl = gammaTable[bl];
+    leds[i] = CRGB(r, g, bl);
+
+    s += stripeWidth + fixCos(wavePhase + waveLength * i / NUM_LEDS);
+  }
+
+  wavePhase += increment;
+  if (wavePhase >= 720) wavePhase -= 720;
 }
