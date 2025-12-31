@@ -398,7 +398,7 @@ unsigned long lastBroadcast = 0;
 // Timing constants
 #define LONG_PRESS_TIME_MS 1500
 #define BROADCAST_INTERVAL_MS 50
-#define LEADER_TIMEOUT_MS 8000  // Increased from 3s to 8s for robustness
+#define LEADER_TIMEOUT_MS 1500  // Fast re-sync: detect missing leader within 1.5s
 #define REJOIN_SCAN_INTERVAL_MS 15000  // Scan for leaders every 15 seconds
 #define COMPLETE_FRAME_TIMEOUT_MS 5000  // Max time between complete frames before restart
 
@@ -1588,15 +1588,20 @@ void sineWaveChase() {
   if (g_patternShouldReset) {
     baseHue = random(1536);
     waveSpan = (1 + random(4 * ((NUM_LEDS + 31) / 32))) * 720;
-    // Medium base speed: 3-6 (will be boosted to 7.5-15 on beats)
+    // Medium base speed: 3-6 (will be boosted to 18-36 on beats with 6x multiplier!)
     baseIncrement = 3 + random(4);
     if (random(2) == 0) baseIncrement = -baseIncrement;
     waveOffset = 0;
     g_patternShouldReset = false;
   }
 
-  // Apply speed envelope for dramatic beat-reactive speed boost (1.0x to 3.5x)
-  int increment = (int)(baseIncrement * getSpeedMultiplier());
+  // Apply EXTRA dramatic speed boost for sine wave pattern
+  // Sine wave gets 2x extra multiplier: (1.0x to 3.5x) * 2.0 = (1.0x to 6x)!
+  float speedMult = getSpeedMultiplier();
+  if (speedMult > 1.0f) {
+    speedMult = 1.0f + (speedMult - 1.0f) * 2.0f;  // Amplify the boost by 2x
+  }
+  int increment = (int)(baseIncrement * speedMult);
 
   // Get beat brightness scale for music mode
   float beatScale = getMusicBeatBrightnessScale();
