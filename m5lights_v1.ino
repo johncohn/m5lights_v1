@@ -377,15 +377,16 @@ unsigned long lastBeatDetectedTime = 0;  // Track when last beat occurred
 #define BRIGHTNESS_DECAY_SECONDS 1.0f    // Time constant for exponential decay (63% falloff) - slower = less jarring
 #define BRIGHTNESS_THRESHOLD 0.35f       // Audio must exceed this level to boost brightness (0.0-1.0)
 #define BRIGHTNESS_POWER_CURVE 2.0f      // Power curve exponent (1.0=linear, 2.0=square, 3.0=cube)
-#define BRIGHTNESS_MIN 18                // Minimum brightness during active music
-#define BRIGHTNESS_MAX 50                // Maximum brightness - increased for better dynamic range
-#define BRIGHTNESS_IDLE 40               // Brightness when no beats detected
+#define BRIGHTNESS_MIN 8                 // Minimum brightness during active music (very dark for contrast)
+#define BRIGHTNESS_MAX 80                // Maximum brightness - very bright for dramatic beats
+#define BRIGHTNESS_IDLE 50               // Brightness when no beats detected
 #define NO_BEAT_TIMEOUT 3000             // Restore full brightness after 3 seconds of silence
 
 // Speed envelope for dramatic beat-reactive speed changes
-float speedEnvelope = 1.0f;              // Current speed multiplier (1.0 = normal, 3.5 = boosted)
+float speedEnvelope = 0.3f;              // Current speed multiplier (0.3 = slower base, 2.0 = boosted)
 unsigned long lastSpeedUpdate = 0;       // For calculating decay time delta
-#define SPEED_BOOST_MULTIPLIER 3.5f      // How much to boost speed on beat (3.5x = very dramatic!)
+#define SPEED_BOOST_MULTIPLIER 2.0f      // How much to boost speed on beat (2x on beat)
+#define SPEED_BASE 0.3f                  // Minimum speed between beats (slower for contrast)
 
 // Adaptive audio scaling - Ultra-fast response for immediate contrast
 float noiseFloor = 0.01f;          // Moving average of quiet ambient sound
@@ -501,11 +502,11 @@ float getMusicBeatBrightnessScale() {
   }
 
   // Always use brightnessEnvelope - it handles idle brightness restoration
-  // Map brightnessEnvelope (18-50) to dramatic range (0.1-1.0)
-  // Idle/no beats: 40 → ~0.7, Min during beats: 18 → 0.1, Max on beats: 50 → 1.0
+  // Map brightnessEnvelope (8-80) to VERY dramatic range (0.02-1.0)
+  // Idle/no beats: 50 → ~0.6, Min during beats: 8 → 0.02 (very dark!), Max on beats: 80 → 1.0 (full bright!)
   float normalized = (brightnessEnvelope - (float)BRIGHTNESS_MIN) / (float)(BRIGHTNESS_MAX - BRIGHTNESS_MIN);
-  float scale = 0.1f + normalized * 0.9f;
-  return constrain(scale, 0.1f, 1.0f);
+  float scale = 0.02f + normalized * 0.98f;
+  return constrain(scale, 0.02f, 1.0f);
 }
 
 // ESP-NOW callbacks
@@ -1063,7 +1064,7 @@ void updateAudioLevel() {
 
   // SPEED ENVELOPE - dramatic speed boost on beat with smooth decay
   // Same attack/decay behavior as brightness for consistent feel
-  float targetSpeed = beatDetected ? SPEED_BOOST_MULTIPLIER : 1.0f;
+  float targetSpeed = beatDetected ? SPEED_BOOST_MULTIPLIER : SPEED_BASE;
 
   float speedTimeDelta = (now - lastSpeedUpdate) / 1000.0f;
   lastSpeedUpdate = now;
@@ -1077,9 +1078,9 @@ void updateAudioLevel() {
     float decayFactor = exp(-speedTimeDelta / tau);
     speedEnvelope = targetSpeed + (speedEnvelope - targetSpeed) * decayFactor;
 
-    // Don't go below 1.0x
-    if (speedEnvelope < 1.0f) {
-      speedEnvelope = 1.0f;
+    // Don't go below base speed
+    if (speedEnvelope < SPEED_BASE) {
+      speedEnvelope = SPEED_BASE;
     }
   }
 
