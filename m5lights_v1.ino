@@ -191,6 +191,14 @@ FASTLED_USING_NAMESPACE
 // Leader sync delay - adjust to match follower display timing
 #define LEADER_DELAY_MS 10  // Delay before leader shows LEDs (ms) - reduced for smoother animation
 
+// Fluffy Mode E1.31/sACN Configuration
+#define FLUFFY_SSID "GMA-WIFI_Access_Point"
+#define FLUFFY_PASSWORD "3576wifi"
+#define E131_PORT 5568
+#define E131_UNIVERSE 30
+#define E131_START_CHANNEL 1
+#define E131_MULTICAST_BASE "239.255.0."
+
 CRGB leds[NUM_LEDS];
 CRGB ledsNext[NUM_LEDS];  // Second buffer for cross-fading
 
@@ -306,9 +314,10 @@ unsigned long fadeStartTime = 0;
 // Ultra-Simple Mode System  
 enum NodeMode {
   MODE_NORMAL,        // Standalone normal patterns, no sync
-  MODE_MUSIC,         // Standalone music-reactive patterns, no sync  
+  MODE_MUSIC,         // Standalone music-reactive patterns, no sync
   MODE_NORMAL_LEADER, // Normal patterns + broadcast LED data
-  MODE_MUSIC_LEADER   // Music patterns + broadcast LED data
+  MODE_MUSIC_LEADER,  // Music patterns + broadcast LED data
+  MODE_FLUFFY         // E1.31/sACN WiFi receiver mode
 };
 
 // Simple LED data sync message
@@ -327,6 +336,14 @@ bool leaderDataActive = false;
 unsigned long lastLeaderMessage = 0;
 unsigned long lastCompleteFrame = 0;  // Last time we received a complete LED frame
 uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+
+// Fluffy Mode variables
+WiFiUDP e131UDP;
+IPAddress multicastIP;
+bool fluffyWiFiConnected = false;
+unsigned long lastFluffyWiFiCheck = 0;
+const unsigned long FLUFFY_WIFI_CHECK_INTERVAL = 30000;  // 30s
+NodeMode previousNonLeaderMode = MODE_NORMAL;  // Track for leader exit
 
 // Pattern globals
 uint8_t gCurrentPatternNumber = 0;
@@ -601,6 +618,147 @@ void setupESPNOW() {
   } else {
     Serial.println("ESP-NOW setup complete");
   }
+}
+
+// ===== FLUFFY MODE FUNCTIONS =====
+
+void enterFluffyMode() {
+  Serial.println("*** ENTERING FLUFFY MODE ***");
+
+  // Deinitialize ESP-NOW
+  esp_now_deinit();
+  delay(100);
+
+  // Connect to WiFi
+  WiFi.disconnect();
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(FLUFFY_SSID, FLUFFY_PASSWORD);
+
+  Serial.print("Connecting to WiFi: ");
+  Serial.println(FLUFFY_SSID);
+
+  unsigned long startAttempt = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 10000) {
+    delay(100);
+    Serial.print(".");
+  }
+  Serial.println();
+
+  fluffyWiFiConnected = (WiFi.status() == WL_CONNECTED);
+
+  if (fluffyWiFiConnected) {
+    Serial.print("WiFi connected! IP: ");
+    Serial.println(WiFi.localIP());
+
+    // Build multicast IP for Universe 30
+    String multicastAddr = String(E131_MULTICAST_BASE) + String(E131_UNIVERSE);
+    multicastIP.fromString(multicastAddr);
+
+    Serial.print("E1.31/sACN Universe ");
+    Serial.print(E131_UNIVERSE);
+    Serial.print(" - Channels ");
+    Serial.print(E131_START_CHANNEL);
+    Serial.print("-");
+    Serial.println(E131_START_CHANNEL + 299);
+    Serial.print("Multicast: ");
+    Serial.println(multicastIP);
+
+    // Join multicast group
+    if (e131UDP.beginMulticast(multicastIP, E131_PORT)) {
+      Serial.print("Joined Universe ");
+      Serial.print(E131_UNIVERSE);
+      Serial.print(" multicast: ");
+      Serial.println(multicastIP);
+    } else {
+      Serial.println("ERROR: Failed to join multicast group!");
+    }
+
+    Serial.print("E1.31 listening on port ");
+    Serial.println(E131_PORT);
+  } else {
+    Serial.println("WiFi connection failed!");
+  }
+
+  // Clear all LEDs to black
+  fill_solid(leds, NUM_LEDS, CRGB::Black);
+  FastLED.show();
+}
+
+void exitFluffyMode() {
+  Serial.println("*** EXITING FLUFFY MODE ***");
+
+  // Stop E1.31
+  e131UDP.stop();
+
+  // Disconnect WiFi
+  WiFi.disconnect();
+  delay(100);
+
+  fluffyWiFiConnected = false;
+
+  // Reinitialize ESP-NOW
+  setupESPNOW();
+
+  // Clear LEDs
+  fill_solid(leds, NUM_LEDS, CRGB::Black);
+  FastLED.show();
+}
+
+void checkFluffyWiFi() {
+  unsigned long now = millis();
+  if (now - lastFluffyWiFiCheck < FLUFFY_WIFI_CHECK_INTERVAL) return;
+  lastFluffyWiFiCheck = now;
+
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("WiFi disconnected, reconnecting...");
+    fluffyWiFiConnected = false;
+    WiFi.begin(FLUFFY_SSID, FLUFFY_PASSWORD);
+  } else {
+    if (!fluffyWiFiConnected) {
+      Serial.println("WiFi reconnected!");
+    }
+    fluffyWiFiConnected = true;
+  }
+}
+
+void processE131() {
+  int packetSize = e131UDP.parsePacket();
+  if (packetSize < 126) return;  // Minimum E1.31 packet size
+
+  uint8_t buffer[638];  // E1.31 packet: 126 bytes header + 512 DMX channels
+  int len = e131UDP.read(buffer, packetSize);
+
+  // Validate minimum packet size
+  if (len < 126) return;
+
+  // Extract universe from framing layer (bytes 113-114, big-endian)
+  uint16_t universe = (buffer[113] << 8) | buffer[114];
+
+  // Check if it's our universe
+  if (universe != E131_UNIVERSE) return;
+
+  // DMX data starts at byte 126 (after all headers)
+  uint8_t* dmxData = buffer + 126;
+  int dmxChannels = len - 126;
+
+  // Check we have enough channels
+  int startIndex = E131_START_CHANNEL - 1;  // Convert to 0-based
+  if (dmxChannels < startIndex + 300) return;
+
+  // Map 300 channels to 100 RGB LEDs
+  for (int i = 0; i < 100; i++) {
+    int channelIndex = startIndex + (i * 3);
+    leds[i].r = dmxData[channelIndex];
+    leds[i].g = dmxData[channelIndex + 1];
+    leds[i].b = dmxData[channelIndex + 2];
+  }
+
+  // Clear remaining 100 LEDs to black
+  for (int i = 100; i < NUM_LEDS; i++) {
+    leds[i] = CRGB::Black;
+  }
+
+  FastLED.show();
 }
 
 // Broadcast LED data (for leader modes)
@@ -985,15 +1143,22 @@ void handleButtons() {
       
     case BTN_PRESSED:
       if (!currentPressed) {
-        // Short press: Toggle Normal ↔ Music (preserve leader state)
+        // Short press: Cycle modes (Normal → Music → Fluffy → Normal, or Leader toggle)
         Serial.print("Short press from mode: ");
         Serial.println(currentMode);
         if (currentMode == MODE_NORMAL) {
           Serial.println("Switching NORMAL -> MUSIC");
           switchToMusicMode();
         } else if (currentMode == MODE_MUSIC) {
-          Serial.println("Switching MUSIC -> NORMAL");
-          switchToNormalMode();
+          Serial.println("Switching MUSIC -> FLUFFY");
+          previousNonLeaderMode = MODE_MUSIC;
+          currentMode = MODE_FLUFFY;
+          enterFluffyMode();
+        } else if (currentMode == MODE_FLUFFY) {
+          Serial.println("Switching FLUFFY -> NORMAL");
+          exitFluffyMode();
+          currentMode = MODE_NORMAL;
+          previousNonLeaderMode = MODE_NORMAL;
         } else if (currentMode == MODE_NORMAL_LEADER) {
           Serial.println("Switching NORMAL_LEADER -> MUSIC_LEADER");
           switchToMusicLeaderMode();
@@ -1122,6 +1287,10 @@ void updateDisplay() {
         backgroundColor = RED;
         textColor = WHITE;
         break;
+      case MODE_FLUFFY:
+        backgroundColor = WHITE;
+        textColor = BLACK;
+        break;
       default:
         backgroundColor = BLACK;
         break;
@@ -1141,6 +1310,9 @@ void updateDisplay() {
     case MODE_MUSIC: modeStr = "MUSIC"; break;
     case MODE_NORMAL_LEADER: modeStr = "NORM LEAD"; break;
     case MODE_MUSIC_LEADER: modeStr = "MUSIC LEAD"; break;
+    case MODE_FLUFFY:
+      modeStr = fluffyWiFiConnected ? "FLUFFY (WiFi)" : "FLUFFY (No WiFi)";
+      break;
   }
   M5.Display.drawString("Mode: " + modeStr, 10, 35);
   
@@ -1367,6 +1539,18 @@ void loop() {
 
   M5.update();
   handleButtons();
+
+  // Fluffy mode processing - completely separate from ESP-NOW
+  if (currentMode == MODE_FLUFFY) {
+    checkFluffyWiFi();
+    processE131();
+    if (currentTime - lastDisplayUpdate > 200) {
+      updateDisplay();
+      lastDisplayUpdate = currentTime;
+    }
+    return;  // Skip all other processing
+  }
+
   handlePatternButtons();
 
   // Check for leader timeout
