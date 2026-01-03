@@ -382,10 +382,10 @@ unsigned long lastBeatDetectedTime = 0;  // Track when last beat occurred
 #define BRIGHTNESS_IDLE 50               // Brightness when no beats detected
 #define NO_BEAT_TIMEOUT 3000             // Restore full brightness after 3 seconds of silence
 
-// Speed envelope for dramatic beat-reactive speed changes
-float speedEnvelope = 0.3f;              // Current speed multiplier (0.3 = slower base, 3.0 = boosted)
+// Speed envelope for moderate beat-reactive speed changes
+float speedEnvelope = 0.3f;              // Current speed multiplier (0.3 = slower base, 1.3 = boosted)
 unsigned long lastSpeedUpdate = 0;       // For calculating decay time delta
-#define SPEED_BOOST_MULTIPLIER 3.0f      // How much to boost speed on beat (3x on beat)
+#define SPEED_BOOST_MULTIPLIER 1.3f      // How much to boost speed on beat (1.3x on beat)
 #define SPEED_BASE 0.3f                  // Minimum speed between beats (slower for contrast)
 
 // Adaptive audio scaling - Ultra-fast response for immediate contrast
@@ -406,7 +406,7 @@ uint8_t rejoinAttempts = 0;
 // Audio configuration
 static constexpr size_t MIC_BUF_LEN = 240;
 static constexpr int MIC_SR = 44100;
-static constexpr float SMOOTH = 0.995f;
+static constexpr float SMOOTH = 0.985f;  // Faster adaptation (was 0.995) for better beat detection
 static constexpr uint32_t BPM_WINDOW = 5000;
 
 // Button handling
@@ -835,32 +835,63 @@ void detectAudioFrame() {
   static int16_t micBuf[MIC_BUF_LEN];
   if (!M5.Mic.record(micBuf, MIC_BUF_LEN)) return;
   
-  long sum = 0; 
+  long sum = 0;
   for (auto &v : micBuf) sum += abs(v);
   float raw = float(sum) / MIC_BUF_LEN / 32767.0f;
-  
+
+  // Asymmetric smoothing: slow rise, fast fall for soundMax to prevent tap spikes from lingering
   soundMin = min(raw, SMOOTH * soundMin + (1 - SMOOTH) * raw);
-  soundMax = max(raw, SMOOTH * soundMax + (1 - SMOOTH) * raw);
+
+  if (raw > soundMax) {
+    // Rising: use slow smoothing (SMOOTH = 0.985)
+    soundMax = max(raw, SMOOTH * soundMax + (1 - SMOOTH) * raw);
+  } else {
+    // Falling: use fast decay (0.95 = 5% new value per frame, ~13x faster than rising)
+    const float FAST_DECAY = 0.95f;
+    soundMax = max(raw, FAST_DECAY * soundMax + (1 - FAST_DECAY) * raw);
+  }
   
   // Adaptive sensitivity with aggressive AGC for noisy environments
   float dynamicRange = soundMax - soundMin;
-  const float MIN_DYNAMIC_RANGE = 0.15f;  // Increased from 0.08 for more aggressive AGC
-  const float HIGH_VOLUME_THRESHOLD = 0.5f;  // Lower threshold to trigger AGC earlier
+  const float MIN_DYNAMIC_RANGE = 0.25f;  // Increased from 0.15 for more aggressive AGC
+  const float HIGH_VOLUME_THRESHOLD = 0.3f;  // Lower threshold to trigger AGC earlier
 
   float adaptedMin = soundMin;
   float adaptedMax = soundMax;
-  float beatThreshold = 0.6f;
+  float beatThreshold = 0.25f;  // Default threshold - lowered for sensitivity
 
   bool highVolumeEnvironment = (soundMin > HIGH_VOLUME_THRESHOLD) || (dynamicRange < MIN_DYNAMIC_RANGE);
 
   if (highVolumeEnvironment) {
     if (dynamicRange < MIN_DYNAMIC_RANGE) {
       // More aggressive expansion for better dynamic range in noisy environments
-      float expansion = (MIN_DYNAMIC_RANGE - dynamicRange) * 1.0f;  // Increased from 0.5 to 1.0
+      float expansion = (MIN_DYNAMIC_RANGE - dynamicRange) * 1.5f;  // Increased from 1.0 to 1.5
       adaptedMin = max(0.0f, soundMin - expansion);
       adaptedMax = min(1.0f, soundMax + expansion);
     }
-    beatThreshold = 0.35f;  // Lower threshold for beat detection in noisy environments
+    beatThreshold = 0.12f;  // Very low threshold for better beat detection
+  }
+
+  // Debug output every 60 frames (~1 second) when in music mode
+  static int debugCounter = 0;
+  if ((currentMode == MODE_MUSIC || currentMode == MODE_MUSIC_LEADER) && ++debugCounter >= 60) {
+    debugCounter = 0;
+    Serial.print("Audio: raw=");
+    Serial.print(raw, 3);
+    Serial.print(" min=");
+    Serial.print(soundMin, 3);
+    Serial.print(" max=");
+    Serial.print(soundMax, 3);
+    Serial.print(" range=");
+    Serial.print(dynamicRange, 3);
+    Serial.print(" level=");
+    Serial.print(musicLevel, 3);
+    Serial.print(" thresh=");
+    Serial.print(beatThreshold, 2);
+    Serial.print(" AGC=");
+    Serial.print(highVolumeEnvironment ? "ON" : "OFF");
+    Serial.print(" beat=");
+    Serial.println(beatDetected ? "YES" : "NO");
   }
   
   musicLevel = constrain((raw - adaptedMin) / (adaptedMax - adaptedMin + 1e-6f), 0.0f, 1.0f);
