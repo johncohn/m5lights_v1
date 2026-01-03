@@ -383,9 +383,9 @@ unsigned long lastBeatDetectedTime = 0;  // Track when last beat occurred
 #define NO_BEAT_TIMEOUT 3000             // Restore full brightness after 3 seconds of silence
 
 // Speed envelope for dramatic beat-reactive speed changes
-float speedEnvelope = 0.3f;              // Current speed multiplier (0.3 = slower base, 2.0 = boosted)
+float speedEnvelope = 0.3f;              // Current speed multiplier (0.3 = slower base, 3.0 = boosted)
 unsigned long lastSpeedUpdate = 0;       // For calculating decay time delta
-#define SPEED_BOOST_MULTIPLIER 2.0f      // How much to boost speed on beat (2x on beat)
+#define SPEED_BOOST_MULTIPLIER 3.0f      // How much to boost speed on beat (3x on beat)
 #define SPEED_BASE 0.3f                  // Minimum speed between beats (slower for contrast)
 
 // Adaptive audio scaling - Ultra-fast response for immediate contrast
