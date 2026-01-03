@@ -373,11 +373,14 @@ bool beatReactive = false;                 // NEW: Whether patterns should respo
 // Brightness decay envelope for smoother audio response
 float brightnessEnvelope = BRIGHTNESS;  // Current decaying brightness level
 unsigned long lastBrightnessUpdate = 0;  // For calculating decay time delta
+unsigned long lastBeatDetectedTime = 0;  // Track when last beat occurred
 #define BRIGHTNESS_DECAY_SECONDS 1.0f    // Time constant for exponential decay (63% falloff) - slower = less jarring
 #define BRIGHTNESS_THRESHOLD 0.35f       // Audio must exceed this level to boost brightness (0.0-1.0)
 #define BRIGHTNESS_POWER_CURVE 2.0f      // Power curve exponent (1.0=linear, 2.0=square, 3.0=cube)
-#define BRIGHTNESS_MIN 18                // Minimum brightness - high enough to see patterns clearly (was 1, too dim!)
-#define BRIGHTNESS_MAX 30                // Maximum brightness - slightly higher for visible pulsing
+#define BRIGHTNESS_MIN 18                // Minimum brightness during active music
+#define BRIGHTNESS_MAX 50                // Maximum brightness - increased for better dynamic range
+#define BRIGHTNESS_IDLE 40               // Brightness when no beats detected
+#define NO_BEAT_TIMEOUT 3000             // Restore full brightness after 3 seconds of silence
 
 // Speed envelope for dramatic beat-reactive speed changes
 float speedEnvelope = 1.0f;              // Current speed multiplier (1.0 = normal, 3.5 = boosted)
@@ -497,12 +500,9 @@ float getMusicBeatBrightnessScale() {
     return 1.0f;  // Normal mode - no scaling
   }
 
-  if (!audioDetected) {
-    return 0.3f;  // Dim when no sound detected
-  }
-
-  // Map brightnessEnvelope (18-30) to VERY dramatic range (0.1-1.0)
-  // Quiet/between beats: 0.1, Loud beats: 1.0
+  // Always use brightnessEnvelope - it handles idle brightness restoration
+  // Map brightnessEnvelope (18-50) to dramatic range (0.1-1.0)
+  // Idle/no beats: 40 → ~0.7, Min during beats: 18 → 0.1, Max on beats: 50 → 1.0
   float normalized = (brightnessEnvelope - (float)BRIGHTNESS_MIN) / (float)(BRIGHTNESS_MAX - BRIGHTNESS_MIN);
   float scale = 0.1f + normalized * 0.9f;
   return constrain(scale, 0.1f, 1.0f);
@@ -841,24 +841,25 @@ void detectAudioFrame() {
   soundMin = min(raw, SMOOTH * soundMin + (1 - SMOOTH) * raw);
   soundMax = max(raw, SMOOTH * soundMax + (1 - SMOOTH) * raw);
   
-  // Adaptive sensitivity
+  // Adaptive sensitivity with aggressive AGC for noisy environments
   float dynamicRange = soundMax - soundMin;
-  const float MIN_DYNAMIC_RANGE = 0.08f;
-  const float HIGH_VOLUME_THRESHOLD = 0.7f;
-  
+  const float MIN_DYNAMIC_RANGE = 0.15f;  // Increased from 0.08 for more aggressive AGC
+  const float HIGH_VOLUME_THRESHOLD = 0.5f;  // Lower threshold to trigger AGC earlier
+
   float adaptedMin = soundMin;
   float adaptedMax = soundMax;
   float beatThreshold = 0.6f;
-  
+
   bool highVolumeEnvironment = (soundMin > HIGH_VOLUME_THRESHOLD) || (dynamicRange < MIN_DYNAMIC_RANGE);
-  
+
   if (highVolumeEnvironment) {
     if (dynamicRange < MIN_DYNAMIC_RANGE) {
-      float expansion = (MIN_DYNAMIC_RANGE - dynamicRange) * 0.5f;
+      // More aggressive expansion for better dynamic range in noisy environments
+      float expansion = (MIN_DYNAMIC_RANGE - dynamicRange) * 1.0f;  // Increased from 0.5 to 1.0
       adaptedMin = max(0.0f, soundMin - expansion);
       adaptedMax = min(1.0f, soundMax + expansion);
     }
-    beatThreshold = 0.35f;
+    beatThreshold = 0.35f;  // Lower threshold for beat detection in noisy environments
   }
   
   musicLevel = constrain((raw - adaptedMin) / (adaptedMax - adaptedMin + 1e-6f), 0.0f, 1.0f);
@@ -890,6 +891,7 @@ void detectAudioFrame() {
       }
     }
     lastBeatTime = t;
+    lastBeatDetectedTime = t;  // Track for brightness restoration
 
     beatDetected = true;
   } else if (!above) {
@@ -1049,6 +1051,16 @@ void updateAudioLevel() {
     }
   }
 
+  // Check if no beats detected for a while - restore to idle brightness
+  // Also check if current audio level is low (just background noise, not music)
+  bool noBeatsTimeout = (now - lastBeatDetectedTime) > NO_BEAT_TIMEOUT;
+  bool lowAudioLevel = (normalizedLevel < BRIGHTNESS_THRESHOLD);
+
+  if (noBeatsTimeout || (lowAudioLevel && brightnessEnvelope < (float)BRIGHTNESS_IDLE * 0.7f)) {
+    // No beats for a while OR very low audio - restore to idle brightness for visibility
+    brightnessEnvelope = (float)BRIGHTNESS_IDLE;
+  }
+
   // SPEED ENVELOPE - dramatic speed boost on beat with smooth decay
   // Same attack/decay behavior as brightness for consistent feel
   float targetSpeed = beatDetected ? SPEED_BOOST_MULTIPLIER : 1.0f;
@@ -1104,6 +1116,8 @@ void switchToMusicMode() {
   currentMode = MODE_MUSIC;
   lastModeSwitch = millis();
   leaderDataActive = false;
+  brightnessEnvelope = (float)BRIGHTNESS_IDLE;  // Start at idle brightness for visibility
+  lastBeatDetectedTime = millis();  // Reset beat timer
   Serial.println("*** MUSIC MODE ***");
 }
 
@@ -1118,6 +1132,8 @@ void switchToMusicLeaderMode() {
   currentMode = MODE_MUSIC_LEADER;
   lastModeSwitch = millis();
   leaderDataActive = false;
+  brightnessEnvelope = (float)BRIGHTNESS_IDLE;  // Start at idle brightness for visibility
+  lastBeatDetectedTime = millis();  // Reset beat timer
   Serial.println("*** MUSIC LEADER MODE ***");
 }
 
@@ -1448,7 +1464,10 @@ void setup() {
   setupButtonInterrupt();
   initAudio();
   setupESPNOW();
-  
+
+  // Initialize beat detection timer for brightness restoration
+  lastBeatDetectedTime = millis();
+
   // Initialize FastLED
   FastLED.addLeds<CHIPSET, LED_PIN, COLOR_ORDER>(leds, NUM_LEDS).setCorrection(TypicalLEDStrip);
   FastLED.setBrightness(BRIGHTNESS);
