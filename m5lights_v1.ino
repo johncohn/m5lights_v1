@@ -1,7 +1,7 @@
 /// @file    m5lights_v1_simple.ino
 /// @brief   ESP-NOW LED Sync with Larry's 4 Beat-Reactive Patterns
-/// @version 4.0.0
-/// @date    2025-12-26
+/// @version 5.2.0
+/// @date    2026-03-14
 /// @author  John Cohn (Larry patterns adapted from larry_test_m5stack)
 ///
 /// @changelog
