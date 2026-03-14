@@ -192,8 +192,10 @@ FASTLED_USING_NAMESPACE
 #define LEADER_DELAY_MS 10  // Delay before leader shows LEDs (ms) - reduced for smoother animation
 
 // Fluffy Mode E1.31/sACN Configuration
-#define FLUFFY_SSID "GMA-WIFI_Access_Point"
-#define FLUFFY_PASSWORD "3576wifi"
+#define FLUFFY_SSID         "FluffyNew"
+#define FLUFFY_PASSWORD     "FluffyWifi!"
+#define FLUFFY_SSID_BACKUP  "GMA-WIFI_Access_Point"
+#define FLUFFY_PASSWORD_BACKUP "3576wifi"
 #define E131_PORT 5568
 #define E131_UNIVERSE 30
 #define E131_START_CHANNEL 1
@@ -630,13 +632,13 @@ void enterFluffyMode() {
   esp_now_deinit();
   delay(100);
 
-  // Connect to WiFi
+  // Connect to WiFi - try primary, fall back to backup
   WiFi.disconnect();
   WiFi.mode(WIFI_STA);
-  WiFi.begin(FLUFFY_SSID, FLUFFY_PASSWORD);
 
   Serial.print("Connecting to WiFi: ");
   Serial.println(FLUFFY_SSID);
+  WiFi.begin(FLUFFY_SSID, FLUFFY_PASSWORD);
 
   unsigned long startAttempt = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 10000) {
@@ -644,6 +646,18 @@ void enterFluffyMode() {
     Serial.print(".");
   }
   Serial.println();
+
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("Primary WiFi failed, trying backup...");
+    WiFi.disconnect();
+    WiFi.begin(FLUFFY_SSID_BACKUP, FLUFFY_PASSWORD_BACKUP);
+    startAttempt = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 10000) {
+      delay(100);
+      Serial.print(".");
+    }
+    Serial.println();
+  }
 
   fluffyWiFiConnected = (WiFi.status() == WL_CONNECTED);
 
@@ -711,9 +725,17 @@ void checkFluffyWiFi() {
   lastFluffyWiFiCheck = now;
 
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("WiFi disconnected, reconnecting...");
+    Serial.println("WiFi disconnected, reconnecting to primary...");
     fluffyWiFiConnected = false;
     WiFi.begin(FLUFFY_SSID, FLUFFY_PASSWORD);
+    unsigned long startAttempt = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 10000) {
+      delay(100);
+    }
+    if (WiFi.status() != WL_CONNECTED) {
+      Serial.println("Primary failed, trying backup...");
+      WiFi.begin(FLUFFY_SSID_BACKUP, FLUFFY_PASSWORD_BACKUP);
+    }
   } else {
     if (!fluffyWiFiConnected) {
       Serial.println("WiFi reconnected!");
