@@ -179,7 +179,7 @@
 FASTLED_USING_NAMESPACE
 
 // Version info
-#define VERSION "4.0.0"
+#define VERSION "5.2.0"
 
 // Hardware config
 #define LED_PIN 32
@@ -625,10 +625,35 @@ void setupESPNOW() {
 
 // ===== FLUFFY MODE FUNCTIONS =====
 
+void joinE131Multicast() {
+  Serial.print("WiFi connected! IP: ");
+  Serial.println(WiFi.localIP());
+
+  String multicastAddr = String(E131_MULTICAST_BASE) + String(E131_UNIVERSE);
+  multicastIP.fromString(multicastAddr);
+
+  Serial.print("E1.31/sACN Universe ");
+  Serial.print(E131_UNIVERSE);
+  Serial.print(" multicast: ");
+  Serial.println(multicastIP);
+
+  e131UDP.stop();  // Stop any previous socket first
+  if (e131UDP.beginMulticast(multicastIP, E131_PORT)) {
+    Serial.println("Joined multicast group - listening for E1.31 packets!");
+  } else {
+    Serial.println("ERROR: Failed to join multicast group!");
+  }
+}
+
 void enterFluffyMode() {
   Serial.println("*** ENTERING FLUFFY MODE ***");
+  Serial.flush();
 
-  // Deinitialize ESP-NOW
+  // Safely tear down ESP-NOW before switching WiFi mode
+  esp_now_unregister_recv_cb();
+  esp_now_unregister_send_cb();
+  esp_now_del_peer(broadcastAddress);
+  delay(50);
   esp_now_deinit();
   delay(100);
 
@@ -641,57 +666,26 @@ void enterFluffyMode() {
   WiFi.begin(FLUFFY_SSID, FLUFFY_PASSWORD);
 
   unsigned long startAttempt = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 10000) {
+  while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 4000) {
     delay(100);
     Serial.print(".");
   }
   Serial.println();
 
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("Primary WiFi failed, trying backup...");
+    // Primary failed - kick off backup and let checkFluffyWiFi finish the connection
+    Serial.println("Primary WiFi failed, starting backup in background...");
     WiFi.disconnect();
+    delay(200);
     WiFi.begin(FLUFFY_SSID_BACKUP, FLUFFY_PASSWORD_BACKUP);
-    startAttempt = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 10000) {
-      delay(100);
-      Serial.print(".");
-    }
-    Serial.println();
   }
 
   fluffyWiFiConnected = (WiFi.status() == WL_CONNECTED);
 
   if (fluffyWiFiConnected) {
-    Serial.print("WiFi connected! IP: ");
-    Serial.println(WiFi.localIP());
-
-    // Build multicast IP for Universe 30
-    String multicastAddr = String(E131_MULTICAST_BASE) + String(E131_UNIVERSE);
-    multicastIP.fromString(multicastAddr);
-
-    Serial.print("E1.31/sACN Universe ");
-    Serial.print(E131_UNIVERSE);
-    Serial.print(" - Channels ");
-    Serial.print(E131_START_CHANNEL);
-    Serial.print("-");
-    Serial.println(E131_START_CHANNEL + 299);
-    Serial.print("Multicast: ");
-    Serial.println(multicastIP);
-
-    // Join multicast group
-    if (e131UDP.beginMulticast(multicastIP, E131_PORT)) {
-      Serial.print("Joined Universe ");
-      Serial.print(E131_UNIVERSE);
-      Serial.print(" multicast: ");
-      Serial.println(multicastIP);
-    } else {
-      Serial.println("ERROR: Failed to join multicast group!");
-    }
-
-    Serial.print("E1.31 listening on port ");
-    Serial.println(E131_PORT);
+    joinE131Multicast();
   } else {
-    Serial.println("WiFi connection failed!");
+    Serial.println("WiFi not yet connected - will join multicast once connected.");
   }
 
   // Clear all LEDs to black
@@ -721,26 +715,32 @@ void exitFluffyMode() {
 
 void checkFluffyWiFi() {
   unsigned long now = millis();
-  if (now - lastFluffyWiFiCheck < FLUFFY_WIFI_CHECK_INTERVAL) return;
+
+  // Poll quickly (every 500ms) while not yet connected, slowly (every 30s) once connected
+  unsigned long interval = fluffyWiFiConnected ? FLUFFY_WIFI_CHECK_INTERVAL : 500;
+  if (now - lastFluffyWiFiCheck < interval) return;
   lastFluffyWiFiCheck = now;
 
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("WiFi disconnected, reconnecting to primary...");
-    fluffyWiFiConnected = false;
-    WiFi.begin(FLUFFY_SSID, FLUFFY_PASSWORD);
-    unsigned long startAttempt = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 10000) {
-      delay(100);
-    }
-    if (WiFi.status() != WL_CONNECTED) {
-      Serial.println("Primary failed, trying backup...");
-      WiFi.begin(FLUFFY_SSID_BACKUP, FLUFFY_PASSWORD_BACKUP);
+  if (WiFi.status() == WL_CONNECTED) {
+    if (!fluffyWiFiConnected) {
+      Serial.println("WiFi connected!");
+      fluffyWiFiConnected = true;
+      joinE131Multicast();
     }
   } else {
-    if (!fluffyWiFiConnected) {
-      Serial.println("WiFi reconnected!");
+    if (fluffyWiFiConnected) {
+      Serial.println("WiFi disconnected, reconnecting...");
+      fluffyWiFiConnected = false;
+      WiFi.begin(FLUFFY_SSID, FLUFFY_PASSWORD);
+      unsigned long startAttempt = millis();
+      while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 4000) {
+        delay(100);
+      }
+      if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("Primary failed, trying backup...");
+        WiFi.begin(FLUFFY_SSID_BACKUP, FLUFFY_PASSWORD_BACKUP);
+      }
     }
-    fluffyWiFiConnected = true;
   }
 }
 

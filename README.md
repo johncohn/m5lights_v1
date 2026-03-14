@@ -1,4 +1,4 @@
-# M5 Lights v5.1.0
+# M5 Lights v5.2.0
 
 Advanced LED control system for M5StickC Plus 2 with WS2811/WS2812 LED strips. Features wireless multi-device synchronization via ESP-NOW, E1.31/sACN WiFi receiver mode, music reactivity with dramatic audio-responsive brightness and speed, and 11 stunning LED patterns.
 
@@ -47,16 +47,17 @@ The system uses **color-coded LCD backgrounds** to indicate the current mode:
 - Auto-cycles through patterns every 15 seconds (when auto-advance enabled)
 
 #### ⚪ **Fluffy Mode (WHITE background)** - E1.31/sACN WiFi Receiver
-- **Receives ArtNet/E1.31/sACN DMX data over WiFi**
-- Displays DMX data from lighting control software (QLab, ETC EOS, GrandMA, etc.)
-- **WiFi Network**: "GMA-WIFI_Access_Point" (password: "3576wifi")
+- **Receives E1.31/sACN DMX data over WiFi**
+- Displays DMX data from lighting control software (QLab, ETC EOS, GrandMA, ELM, etc.)
+- **Primary WiFi**: "FluffyNew" (password: "FluffyWifi!")
+- **Backup WiFi**: "GMA-WIFI_Access_Point" (password: "3576wifi") — used automatically if primary unavailable
 - **Protocol**: E1.31/sACN on port 5568
 - **Universe**: 30 (multicast address 239.255.0.30)
 - **Channels**: 1-300 (100 LEDs × RGB)
 - **LED Mapping**: First 100 LEDs display DMX data, remaining 100 stay black
 - **Isolation**: ESP-NOW is deinitialized in this mode (mutually exclusive)
-- WiFi reconnection every 30 seconds if connection lost
-- White screen shows "Fluffy (WiFi)" when connected, "Fluffy (No WiFi)" when disconnected
+- WiFi checks every 500ms while connecting, every 30 seconds once connected
+- White screen shows "FLUFFY (WiFi)" when connected, "FLUFFY (No WiFi)" when disconnected
 
 ### Controls
 
@@ -158,8 +159,8 @@ The music reactive modes (Purple and Red) use advanced audio processing:
 Fluffy mode turns the M5Stick into a WiFi DMX receiver for professional lighting control:
 
 #### Network Configuration
-- **WiFi SSID**: "GMA-WIFI_Access_Point"
-- **WiFi Password**: "3576wifi"
+- **Primary WiFi SSID**: "FluffyNew" / password: "FluffyWifi!"
+- **Backup WiFi SSID**: "GMA-WIFI_Access_Point" / password: "3576wifi"
 - **Protocol**: E1.31/sACN (Streaming ACN)
 - **Port**: 5568 (standard E1.31 port)
 - **Transport**: Multicast UDP
@@ -276,8 +277,10 @@ For professional DMX lighting control software integration:
 #define SPEED_BOOST_MULTIPLIER 3.0f       // Maximum speed multiplier on beat
 
 // E1.31/sACN (Fluffy mode)
-#define FLUFFY_SSID "GMA-WIFI_Access_Point"
-#define FLUFFY_PASSWORD "3576wifi"
+#define FLUFFY_SSID         "FluffyNew"        // Primary WiFi
+#define FLUFFY_PASSWORD     "FluffyWifi!"
+#define FLUFFY_SSID_BACKUP  "GMA-WIFI_Access_Point"  // Fallback WiFi
+#define FLUFFY_PASSWORD_BACKUP "3576wifi"
 #define E131_PORT 5568                    // Standard E1.31 port
 #define E131_UNIVERSE 30                  // DMX universe
 #define E131_START_CHANNEL 1              // Start at channel 1
@@ -310,6 +313,14 @@ For professional DMX lighting control software integration:
    - Power to external 5V supply (LED strips require significant current)
 
 ## Version History
+
+### v5.2.0 (2026-03-14) - **Fluffy Mode WiFi Fallback & Stability**
+- Added primary WiFi "FluffyNew" with automatic fallback to "GMA-WIFI_Access_Point"
+- Fixed watchdog crash when entering Fluffy mode (was blocking >5s waiting for WiFi)
+- Fixed multicast group not being joined when backup WiFi connects in background
+- Polls for WiFi connection every 500ms (was only checking every 30s)
+- Properly tears down ESP-NOW callbacks/peers before deinit to prevent crash
+- Fixed version number display (was stuck showing 4.0.0 on screen)
 
 ### v5.1.0 (2026-01-03) - **Audio Brightness & Speed Tuning**
 - Expanded brightness range to 8-80 (was 18-50) for more dramatic contrast
@@ -407,10 +418,10 @@ For professional DMX lighting control software integration:
 ### Fluffy Mode (E1.31/sACN) Issues
 
 **Not Connecting to WiFi**
-- Verify SSID "GMA-WIFI_Access_Point" and password "3576wifi" are correct
-- Check that WiFi network is active and in range
-- Display shows "Fluffy (No WiFi)" when disconnected
-- Auto-reconnect attempts every 30 seconds
+- Device tries "FluffyNew" first (4 second timeout), then falls back to "GMA-WIFI_Access_Point"
+- Check that at least one WiFi network is active and in range
+- Display shows "FLUFFY (No WiFi)" when disconnected
+- Auto-reconnect attempts every 30 seconds once connected; polls every 500ms while connecting
 
 **No DMX Data Displayed**
 - Verify lighting software is sending to Universe 30
