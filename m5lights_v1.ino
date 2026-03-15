@@ -192,13 +192,13 @@ FASTLED_USING_NAMESPACE
 #define LEADER_DELAY_MS 10  // Delay before leader shows LEDs (ms) - reduced for smoother animation
 
 // Fluffy Mode E1.31/sACN Configuration
-#define FLUFFY_SSID         "FluffyNew"
+#define FLUFFY_SSID         "FluffyWifi"
 #define FLUFFY_PASSWORD     "FluffyWifi!"
 #define FLUFFY_SSID_BACKUP  "GMA-WIFI_Access_Point"
 #define FLUFFY_PASSWORD_BACKUP "3576wifi"
 #define E131_PORT 5568
-#define E131_UNIVERSE 30
-#define E131_START_CHANNEL 1
+#define E131_UNIVERSE 28
+#define E131_START_CHANNEL 31
 #define E131_MULTICAST_BASE "239.255.0."
 
 CRGB leds[NUM_LEDS];
@@ -726,6 +726,10 @@ void checkFluffyWiFi() {
       Serial.println("WiFi connected!");
       fluffyWiFiConnected = true;
       joinE131Multicast();
+    } else {
+      // Periodically rejoin multicast in case IGMP membership expired
+      Serial.println("Refreshing multicast group membership...");
+      joinE131Multicast();
     }
   } else {
     if (fluffyWiFiConnected) {
@@ -746,27 +750,49 @@ void checkFluffyWiFi() {
 
 void processE131() {
   int packetSize = e131UDP.parsePacket();
-  if (packetSize < 126) return;  // Minimum E1.31 packet size
+  if (packetSize == 0) return;
 
-  uint8_t buffer[638];  // E1.31 packet: 126 bytes header + 512 DMX channels
-  int len = e131UDP.read(buffer, packetSize);
+  static unsigned long lastPacketLog = 0;
+  static uint32_t packetCount = 0;
 
-  // Validate minimum packet size
-  if (len < 126) return;
+  if (packetSize < 126) {
+    Serial.printf("E131: packet too small (%d bytes)\n", packetSize);
+    return;
+  }
+
+  uint8_t buffer[638];
+  int len = e131UDP.read(buffer, sizeof(buffer));
+
+  if (len < 126) {
+    Serial.printf("E131: read too short (%d bytes)\n", len);
+    return;
+  }
 
   // Extract universe from framing layer (bytes 113-114, big-endian)
   uint16_t universe = (buffer[113] << 8) | buffer[114];
 
-  // Check if it's our universe
-  if (universe != E131_UNIVERSE) return;
+  if (universe != E131_UNIVERSE) {
+    Serial.printf("E131: wrong universe %d (expected %d)\n", universe, E131_UNIVERSE);
+    return;
+  }
 
   // DMX data starts at byte 126 (after all headers)
   uint8_t* dmxData = buffer + 126;
   int dmxChannels = len - 126;
 
-  // Check we have enough channels
-  int startIndex = E131_START_CHANNEL - 1;  // Convert to 0-based
-  if (dmxChannels < startIndex + 300) return;
+  int startIndex = E131_START_CHANNEL - 1;
+  if (dmxChannels < startIndex + 300) {
+    Serial.printf("E131: not enough channels (%d, need %d)\n", dmxChannels, startIndex + 300);
+    return;
+  }
+
+  // Log packet receipt every 5 seconds
+  packetCount++;
+  if (millis() - lastPacketLog > 5000) {
+    Serial.printf("E131: receiving OK - %lu packets in last 5s\n", packetCount);
+    packetCount = 0;
+    lastPacketLog = millis();
+  }
 
   // Map 300 channels to 100 RGB LEDs
   for (int i = 0; i < 100; i++) {

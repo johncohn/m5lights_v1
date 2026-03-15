@@ -49,11 +49,11 @@ The system uses **color-coded LCD backgrounds** to indicate the current mode:
 #### ⚪ **Fluffy Mode (WHITE background)** - E1.31/sACN WiFi Receiver
 - **Receives E1.31/sACN DMX data over WiFi**
 - Displays DMX data from lighting control software (QLab, ETC EOS, GrandMA, ELM, etc.)
-- **Primary WiFi**: "FluffyNew" (password: "FluffyWifi!")
+- **Primary WiFi**: "FluffyWifi" (password: "FluffyWifi!")
 - **Backup WiFi**: "GMA-WIFI_Access_Point" (password: "3576wifi") — used automatically if primary unavailable
 - **Protocol**: E1.31/sACN on port 5568
-- **Universe**: 30 (multicast address 239.255.0.30)
-- **Channels**: 1-300 (100 LEDs × RGB)
+- **Universe**: 28 (multicast address 239.255.0.28)
+- **Channels**: 31-330 (100 LEDs × RGB, start channel 31)
 - **LED Mapping**: First 100 LEDs display DMX data, remaining 100 stay black
 - **Isolation**: ESP-NOW is deinitialized in this mode (mutually exclusive)
 - WiFi checks every 500ms while connecting, every 30 seconds once connected
@@ -159,7 +159,7 @@ The music reactive modes (Purple and Red) use advanced audio processing:
 Fluffy mode turns the M5Stick into a WiFi DMX receiver for professional lighting control:
 
 #### Network Configuration
-- **Primary WiFi SSID**: "FluffyNew" / password: "FluffyWifi!"
+- **Primary WiFi SSID**: "FluffyWifi" / password: "FluffyWifi!"
 - **Backup WiFi SSID**: "GMA-WIFI_Access_Point" / password: "3576wifi"
 - **Protocol**: E1.31/sACN (Streaming ACN)
 - **Port**: 5568 (standard E1.31 port)
@@ -167,15 +167,15 @@ Fluffy mode turns the M5Stick into a WiFi DMX receiver for professional lighting
 
 #### DMX Configuration
 - **Universe**: 30
-- **Multicast Address**: 239.255.0.30 (auto-calculated from universe)
-- **Start Channel**: 1
-- **Channel Count**: 300 (100 LEDs × 3 channels RGB)
+- **Multicast Address**: 239.255.0.28 (auto-calculated from universe)
+- **Start Channel**: 31
+- **Channel Count**: 300 (100 LEDs × 3 channels RGB, channels 31-330)
 
 #### LED Mapping
-- **Channels 1-3**: LED 0 (R, G, B)
-- **Channels 4-6**: LED 1 (R, G, B)
+- **Channels 31-33**: LED 0 (R, G, B)
+- **Channels 34-36**: LED 1 (R, G, B)
 - ...
-- **Channels 298-300**: LED 99 (R, G, B)
+- **Channels 328-330**: LED 99 (R, G, B)
 - **LEDs 100-199**: Forced to black (unused)
 
 #### Features
@@ -232,8 +232,8 @@ For professional DMX lighting control software integration:
 
 1. Configure your lighting software:
    - **Protocol**: E1.31/sACN (Streaming ACN)
-   - **Universe**: 30
-   - **Start Address**: Channel 1
+   - **Universe**: 28
+   - **Start Address**: Channel 31
    - **Device Type**: Generic RGB fixture (100 LEDs = 300 channels)
    - **Output Mode**: Multicast (recommended) or Unicast
 
@@ -277,13 +277,13 @@ For professional DMX lighting control software integration:
 #define SPEED_BOOST_MULTIPLIER 3.0f       // Maximum speed multiplier on beat
 
 // E1.31/sACN (Fluffy mode)
-#define FLUFFY_SSID         "FluffyNew"        // Primary WiFi
+#define FLUFFY_SSID         "FluffyWifi"        // Primary WiFi
 #define FLUFFY_PASSWORD     "FluffyWifi!"
 #define FLUFFY_SSID_BACKUP  "GMA-WIFI_Access_Point"  // Fallback WiFi
 #define FLUFFY_PASSWORD_BACKUP "3576wifi"
 #define E131_PORT 5568                    // Standard E1.31 port
-#define E131_UNIVERSE 30                  // DMX universe
-#define E131_START_CHANNEL 1              // Start at channel 1
+#define E131_UNIVERSE 28                  // DMX universe
+#define E131_START_CHANNEL 31             // Start at channel 31
 ```
 
 ## Libraries Required
@@ -315,7 +315,7 @@ For professional DMX lighting control software integration:
 ## Version History
 
 ### v5.2.0 (2026-03-14) - **Fluffy Mode WiFi Fallback & Stability**
-- Added primary WiFi "FluffyNew" with automatic fallback to "GMA-WIFI_Access_Point"
+- Added primary WiFi "FluffyWifi" with automatic fallback to "GMA-WIFI_Access_Point"
 - Fixed watchdog crash when entering Fluffy mode (was blocking >5s waiting for WiFi)
 - Fixed multicast group not being joined when backup WiFi connects in background
 - Polls for WiFi connection every 500ms (was only checking every 30s)
@@ -418,13 +418,13 @@ For professional DMX lighting control software integration:
 ### Fluffy Mode (E1.31/sACN) Issues
 
 **Not Connecting to WiFi**
-- Device tries "FluffyNew" first (4 second timeout), then falls back to "GMA-WIFI_Access_Point"
+- Device tries "FluffyWifi" first (4 second timeout), then falls back to "GMA-WIFI_Access_Point"
 - Check that at least one WiFi network is active and in range
 - Display shows "FLUFFY (No WiFi)" when disconnected
 - Auto-reconnect attempts every 30 seconds once connected; polls every 500ms while connecting
 
 **No DMX Data Displayed**
-- Verify lighting software is sending to Universe 30
+- Verify lighting software is sending to Universe 28, start channel 31
 - Check that E1.31/sACN output is enabled in software
 - Ensure multicast mode is enabled (or send unicast to device IP)
 - Verify channels 1-300 are being sent
